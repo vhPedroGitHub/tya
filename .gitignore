@@ -1,0 +1,36 @@
+# Binaries
+bin/
+*.exe
+*.out
+
+# Go build cache
+*.test
+*.prof
+
+# Go generated files
+vendor/
+
+# openapi-generator output
+/generated/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# TYA run reports
+tya-report-*.json
+
+# Environment / secrets
+.env
+.env.*
+*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
