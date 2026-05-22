@@ -161,6 +161,120 @@ func GenerateAuthInject(auth configyml.AuthProfile) string {
 	}
 }
 
+// GenerateAuthSetupWithGlobal generates the k6 setup() function body that
+// acquires authentication tokens and also returns the globalState so it is
+// available to the VU default function via data.globalState.
+func GenerateAuthSetupWithGlobal(auth configyml.AuthProfile, baseURL string) string {
+	// Delegate to the inner helpers but capture result in a variable, then
+	// return with globalState merged in.
+	var b strings.Builder
+
+	switch auth.Type {
+	case "custom_login":
+		b.WriteString(generateCustomLoginAuthWithGlobal(auth, baseURL))
+	case "oauth2_password":
+		b.WriteString(generateOAuth2PasswordAuthWithGlobal(auth))
+	case "oauth2_client_credentials":
+		b.WriteString(generateOAuth2ClientCredentialsAuthWithGlobal(auth))
+	case "api_key":
+		fmt.Fprintf(&b, "  return { auth: { api_key: __ENV.%s || '%s' }, globalState: globalState };\n",
+			envVarName(auth.Value), auth.Value)
+	case "basic":
+		fmt.Fprintf(&b, "  return { auth: { username: __ENV.%s || '%s', password: __ENV.%s || '%s' }, globalState: globalState };\n",
+			envVarName(auth.Username), auth.Username,
+			envVarName(auth.Password), auth.Password)
+	default:
+		b.WriteString("  return { globalState: globalState };\n")
+	}
+
+	return b.String()
+}
+
+func generateCustomLoginAuthWithGlobal(auth configyml.AuthProfile, baseURL string) string {
+	var b strings.Builder
+
+	loginURL := fmt.Sprintf("`${baseURL}%s`", auth.LoginEndpoint)
+	payload := strings.TrimSpace(auth.Payload)
+	payloadJS := envVarsToK6TemplateLiteral(payload)
+
+	fmt.Fprintf(&b, "  const loginRes = http.request(%s, %s, %s, {\n",
+		JsString(strings.ToUpper(auth.Method)),
+		loginURL,
+		payloadJS)
+	b.WriteString("    headers: { 'Content-Type': 'application/json' },\n")
+	b.WriteString("  });\n")
+	b.WriteString("  if (loginRes.status !== 200) {\n")
+	b.WriteString("    throw new Error('Auth login failed: ' + loginRes.status + ' ' + loginRes.body);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  const loginBody = loginRes.json();\n")
+	b.WriteString("  const auth = {\n")
+	for key, path := range auth.ExtractToken {
+		jsPath := strings.ReplaceAll(path, "response.body.", "")
+		fmt.Fprintf(&b, "    %s: navigate(loginBody, '%s'),\n", key, jsPath)
+	}
+	b.WriteString("  };\n")
+	if auth.RefreshEndpoint != "" {
+		fmt.Fprintf(&b, "  auth.__refreshEndpoint = '%s';\n", auth.RefreshEndpoint)
+		fmt.Fprintf(&b, "  auth.__refreshMethod = '%s';\n", strings.ToUpper(auth.RefreshMethod))
+		if auth.RefreshPayload != "" {
+			fmt.Fprintf(&b, "  auth.__refreshPayload = '%s';\n", strings.TrimSpace(auth.RefreshPayload))
+		}
+		b.WriteString("  auth.__refreshExtract = {\n")
+		for key, path := range auth.RefreshExtract {
+			jsPath := strings.ReplaceAll(path, "response.body.", "")
+			fmt.Fprintf(&b, "    %s: '%s',\n", key, jsPath)
+		}
+		b.WriteString("  };\n")
+	}
+	b.WriteString("  return { auth: auth, globalState: globalState };\n")
+	return b.String()
+}
+
+func generateOAuth2PasswordAuthWithGlobal(auth configyml.AuthProfile) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  const tokenRes = http.post('%s', {\n", auth.TokenURL)
+	b.WriteString("    grant_type: 'password',\n")
+	fmt.Fprintf(&b, "    client_id: '%s',\n", auth.ClientID)
+	fmt.Fprintf(&b, "    client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
+	fmt.Fprintf(&b, "    username: __ENV.%s || '%s',\n", envVarName(auth.Username), auth.Username)
+	fmt.Fprintf(&b, "    password: __ENV.%s || '%s',\n", envVarName(auth.Password), auth.Password)
+	if len(auth.Scopes) > 0 {
+		fmt.Fprintf(&b, "    scope: '%s',\n", strings.Join(auth.Scopes, " "))
+	}
+	b.WriteString("  });\n")
+	b.WriteString("  if (tokenRes.status !== 200) {\n")
+	b.WriteString("    throw new Error('OAuth2 token request failed: ' + tokenRes.status);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  const tokenBody = tokenRes.json();\n")
+	b.WriteString("  return { auth: {\n")
+	b.WriteString("    access_token: tokenBody.access_token,\n")
+	b.WriteString("    refresh_token: tokenBody.refresh_token,\n")
+	b.WriteString("    expires_in: tokenBody.expires_in,\n")
+	b.WriteString("  }, globalState: globalState };\n")
+	return b.String()
+}
+
+func generateOAuth2ClientCredentialsAuthWithGlobal(auth configyml.AuthProfile) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  const tokenRes = http.post('%s', {\n", auth.TokenURL)
+	b.WriteString("    grant_type: 'client_credentials',\n")
+	fmt.Fprintf(&b, "    client_id: '%s',\n", auth.ClientID)
+	fmt.Fprintf(&b, "    client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
+	if len(auth.Scopes) > 0 {
+		fmt.Fprintf(&b, "    scope: '%s',\n", strings.Join(auth.Scopes, " "))
+	}
+	b.WriteString("  });\n")
+	b.WriteString("  if (tokenRes.status !== 200) {\n")
+	b.WriteString("    throw new Error('OAuth2 client_credentials failed: ' + tokenRes.status);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  const tokenBody = tokenRes.json();\n")
+	b.WriteString("  return { auth: {\n")
+	b.WriteString("    access_token: tokenBody.access_token,\n")
+	b.WriteString("    expires_in: tokenBody.expires_in,\n")
+	b.WriteString("  }, globalState: globalState };\n")
+	return b.String()
+}
+
 // GenerateAuthImport returns extra k6 imports needed for auth types.
 func GenerateAuthImport(auth configyml.AuthProfile) string {
 	if auth.Type == "basic" {

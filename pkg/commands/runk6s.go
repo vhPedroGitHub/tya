@@ -1,12 +1,16 @@
 package commands
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -103,6 +107,12 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 		zap.String("base_url", baseURL),
 	)
 
+	// globalState accumulates values emitted by TYA_GLOBAL: sentinels across flows.
+	// Structure: map[flowName]map[key]any for scalar values,
+	//            map[flowName]map[key][]any for list values (appended across VU iterations).
+	globalScalars := map[string]map[string]any{}
+	globalLists := map[string]map[string][]any{}
+
 	// Execute each flow in order
 	for _, fc := range order {
 		scriptPath := filepath.Join(opts.Dir, fc.File)
@@ -118,6 +128,7 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 
 		args := []string{
 			"run",
+			"--log-format", "json",
 			"--summary-export", reportPath,
 			"--out", "json=" + jsonReportPath,
 			"-e", "BASE_URL=" + baseURL,
@@ -128,11 +139,41 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 			args = append(args, "-e", k+"="+v)
 		}
 
+		// Pass accumulated global state to this flow
+		if len(globalScalars) > 0 || len(globalLists) > 0 {
+			// Build the combined globalState object that setup() will parse
+			// Shape: { "flow-name": { "key": value, "key_list": [v1, v2, ...] } }
+			combined := map[string]map[string]any{}
+			for flowName, keys := range globalScalars {
+				if combined[flowName] == nil {
+					combined[flowName] = map[string]any{}
+				}
+				for k, v := range keys {
+					combined[flowName][k] = v
+				}
+			}
+			for flowName, keys := range globalLists {
+				if combined[flowName] == nil {
+					combined[flowName] = map[string]any{}
+				}
+				for k, v := range keys {
+					combined[flowName][k] = v
+				}
+			}
+			stateJSON, err := json.Marshal(combined)
+			if err == nil {
+				args = append(args, "-e", "TYA_GLOBAL_STATE="+string(stateJSON))
+			}
+		}
+
 		args = append(args, scriptPath)
 
 		cmd := exec.Command("k6", args...)
+		// Capture stderr so we can parse TYA_GLOBAL: sentinels (k6 console.log → stderr),
+		// while also streaming output to the user's terminal.
+		var stderrBuf bytes.Buffer
 		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 		if err := cmd.Run(); err != nil {
 			log.Warn("k6 flow had errors", zap.String("flow", fc.Name), zap.Error(err))
@@ -140,11 +181,69 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 		} else {
 			log.Info("flow completed", zap.String("flow", fc.Name))
 		}
+
+		// Parse TYA_GLOBAL: sentinels from captured stderr output
+		parseGlobalSentinels(stderrBuf.String(), globalScalars, globalLists)
 	}
 
 	fmt.Printf("\nReports written to %s/\n", reportsDir)
 
 	return nil
+}
+
+// tyaGlobalSentinel is the parsed structure from a TYA_GLOBAL: console.log line.
+type tyaGlobalSentinel struct {
+	Flow  string `json:"flow"`
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+	List  bool   `json:"list"`
+}
+
+// k6LogLine represents a single JSON-formatted k6 log line.
+type k6LogLine struct {
+	Level  string `json:"level"`
+	Msg    string `json:"msg"`
+	Source string `json:"source"`
+}
+
+// parseGlobalSentinels scans k6 JSON-format log output for lines where msg
+// starts with "TYA_GLOBAL: " and accumulates the values into globalScalars
+// and globalLists. k6 is invoked with --log-format json so each stderr line is
+// a JSON object like {"level":"info","msg":"TYA_GLOBAL: {...}","source":"console"}.
+func parseGlobalSentinels(output string, scalars map[string]map[string]any, lists map[string]map[string][]any) {
+	const prefix = "TYA_GLOBAL: "
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, prefix) {
+			continue
+		}
+		// Parse the outer k6 JSON log envelope
+		var logLine k6LogLine
+		if err := json.Unmarshal([]byte(line), &logLine); err != nil {
+			continue
+		}
+		if !strings.HasPrefix(logLine.Msg, prefix) {
+			continue
+		}
+		jsonStr := strings.TrimPrefix(logLine.Msg, prefix)
+		var s tyaGlobalSentinel
+		if err := json.Unmarshal([]byte(jsonStr), &s); err != nil {
+			continue
+		}
+		if s.List {
+			if lists[s.Flow] == nil {
+				lists[s.Flow] = map[string][]any{}
+			}
+			lists[s.Flow][s.Key] = append(lists[s.Flow][s.Key], s.Value)
+		} else {
+			if scalars[s.Flow] == nil {
+				scalars[s.Flow] = map[string]any{}
+			}
+			scalars[s.Flow][s.Key] = s.Value
+		}
+	}
 }
 
 // topologicalSortK6 sorts flows by dependency order using Kahn's algorithm.

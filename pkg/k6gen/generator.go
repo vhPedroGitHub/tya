@@ -92,11 +92,16 @@ func generateFlowScript(flow configyml.Flow, baseURL string, authMap map[string]
 	// Setup function
 	b.WriteString("export function setup() {\n")
 	b.WriteString("  const baseURL = __ENV.BASE_URL || " + JsString(baseURL) + ";\n")
+	// Inject global state from previous flows (written by runk6s into TYA_GLOBAL_STATE env var)
+	b.WriteString("  let globalState = {};\n")
+	b.WriteString("  if (__ENV.TYA_GLOBAL_STATE) {\n")
+	b.WriteString("    try { globalState = JSON.parse(__ENV.TYA_GLOBAL_STATE); } catch(_) {}\n")
+	b.WriteString("  }\n")
 
 	if flow.Auth != "" {
-		b.WriteString(GenerateAuthSetup(auth, baseURL))
+		b.WriteString(GenerateAuthSetupWithGlobal(auth, baseURL))
 	} else {
-		b.WriteString("    return {};\n")
+		b.WriteString("  return { globalState: globalState };\n")
 	}
 	b.WriteString("}\n\n")
 
@@ -109,7 +114,19 @@ func generateFlowScript(flow configyml.Flow, baseURL string, authMap map[string]
 	b.WriteString("  if (data.auth) {\n")
 	b.WriteString("    Object.keys(data.auth).forEach(k => { ctx[k] = data.auth[k]; });\n")
 	b.WriteString("  }\n")
-	b.WriteString("  ctx['_base_url'] = baseURL;\n\n")
+	b.WriteString("  ctx['_base_url'] = baseURL;\n")
+	// Inject global state from previous flows into ctx and data for iterate flows
+	b.WriteString("  // Inject global state from previous flows\n")
+	b.WriteString("  const globalState = data.globalState || {};\n")
+	b.WriteString("  Object.keys(globalState).forEach(flowKey => {\n")
+	b.WriteString("    const flowData = globalState[flowKey];\n")
+	b.WriteString("    if (flowData && typeof flowData === 'object') {\n")
+	b.WriteString("      Object.keys(flowData).forEach(k => {\n")
+	b.WriteString("        ctx[flowKey + '.' + k] = flowData[k];\n")
+	b.WriteString("        data[flowKey + '.' + k] = flowData[k];\n")
+	b.WriteString("      });\n")
+	b.WriteString("    }\n")
+	b.WriteString("  });\n\n")
 
 	if flow.Type == "iterate" {
 		itemVar := flow.ItemVariable
