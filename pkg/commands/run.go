@@ -118,15 +118,21 @@ func runFlows(log *zap.Logger, opts *models.RunOptions) error {
 	}
 	startedAt := time.Now()
 
-	// Build the executor functions that close over logger, authMap, opts, baseURL.
+	// Create the global bucket shared across all flows.
+	bucket := cli_functions.NewGlobalBucket()
+
+	// Build the executor functions that close over logger, authMap, opts, baseURL, bucket.
 	flowExec := func(flow configyml.Flow) (cli_functions.FlowReport, cli_functions.FlowContext) {
-		return executeFlow(log, flow, authMap, opts, baseURL)
+		return executeFlow(log, flow, authMap, opts, baseURL, bucket)
 	}
 	wireExec := func(wf configyml.WireFlow, parentCtx cli_functions.FlowContext) []cli_functions.StepReport {
-		return executeWireFlow(log, wf, authMap, parentCtx, baseURL)
+		return executeWireFlow(log, wf, authMap, parentCtx, baseURL, bucket)
+	}
+	iterateExec := func(flow configyml.Flow) cli_functions.FlowReport {
+		return executeIterateFlow(log, flow, authMap, opts, baseURL, bucket)
 	}
 
-	results := cli_functions.RunScheduler(log, flows, flowExec, wireExec)
+	results := cli_functions.RunScheduler(log, flows, flowExec, wireExec, iterateExec)
 
 	finishedAt := time.Now()
 
@@ -240,6 +246,7 @@ func executeFlow(
 	authMap map[string]configyml.AuthProfile,
 	opts *models.RunOptions,
 	baseURL string,
+	bucket *cli_functions.GlobalBucket,
 ) (cli_functions.FlowReport, cli_functions.FlowContext) {
 
 	duration := 30 * time.Second
@@ -305,6 +312,8 @@ func executeFlow(
 	if testMode {
 		// Single-pass: one sequential execution.
 		fCtx := cli_functions.FlowContext{"_base_url": baseURL}
+		fCtx["global"] = bucket.Snapshot()
+		fCtx["global_lists"] = bucket.SnapshotLists()
 		if flow.Auth != "" {
 			if auth, ok := authMap[flow.Auth]; ok {
 				acquireToken(log, auth, baseURL, fCtx)
@@ -323,7 +332,7 @@ func executeFlow(
 					zap.Error(res.Err),
 				)
 			} else {
-				applyExtracts(step.Extract, res.Body, fCtx)
+				applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
 			}
 		}
 		if iterOK {
@@ -412,6 +421,8 @@ func executeFlow(
 					rampWg.Done()
 				}()
 				fCtx := cli_functions.FlowContext{"_base_url": baseURL}
+				fCtx["global"] = bucket.Snapshot()
+				fCtx["global_lists"] = bucket.SnapshotLists()
 				if flow.Auth != "" {
 					if auth, ok := authMap[flow.Auth]; ok {
 						acquireToken(log, auth, baseURL, fCtx)
@@ -426,7 +437,7 @@ func executeFlow(
 					if res.Err != nil || res.StatusCode >= 400 {
 						iterOK = false
 					} else {
-						applyExtracts(step.Extract, res.Body, fCtx)
+						applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
 					}
 				}
 				if iterOK {
@@ -866,10 +877,13 @@ func executeWireFlow(
 	authMap map[string]configyml.AuthProfile,
 	parentCtx cli_functions.FlowContext,
 	baseURL string,
+	bucket *cli_functions.GlobalBucket,
 ) []cli_functions.StepReport {
 	// Work on a snapshot copy so the parent context is not mutated.
 	fCtx := copyContext(parentCtx)
 	fCtx["_base_url"] = baseURL
+	fCtx["global"] = bucket.Snapshot()
+	fCtx["global_lists"] = bucket.SnapshotLists()
 
 	// Acquire auth for the wire-flow if it specifies one.
 	if wf.Auth != "" {
@@ -891,7 +905,7 @@ func executeWireFlow(
 				zap.Error(res.Err),
 			)
 		} else {
-			applyExtracts(step.Extract, res.Body, fCtx)
+			applyExtracts(step.Extract, res.Body, fCtx, wf.Name, bucket)
 		}
 		reports = append(reports, cli_functions.StepReport{
 			StepID:   id,
@@ -908,6 +922,173 @@ func boolToInt64(b bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// ---------------------------------------------------------------------------
+// Iterate-flow execution
+// ---------------------------------------------------------------------------
+
+// executeIterateFlow runs a flow of type "iterate". It reads a list from the
+// global bucket, then processes every item sequentially, executing all steps
+// for each item. The RPS controls the pace: each item is started at a rate of
+// 1/RPS seconds (so HTTP-call rate = RPS × N_steps).
+//
+// The current item is injected into the flow context under the key specified
+// by flow.ItemVariable (default "item"), making it accessible in templates as
+// {{ .item }} or {{ index .item "field" }}.
+func executeIterateFlow(
+	log *zap.Logger,
+	flow configyml.Flow,
+	authMap map[string]configyml.AuthProfile,
+	opts *models.RunOptions,
+	baseURL string,
+	bucket *cli_functions.GlobalBucket,
+) cli_functions.FlowReport {
+	// Parse iterate_list: "flow-name.key".
+	parts := strings.SplitN(flow.IterateList, ".", 2)
+	if len(parts) != 2 {
+		log.Error("iterate_list must be 'flow-name.key'", zap.String("iterate_list", flow.IterateList))
+		return cli_functions.FlowReport{}
+	}
+	srcFlow, srcKey := parts[0], parts[1]
+
+	// Get the list from the global bucket.
+	items := bucket.GetList(srcFlow, srcKey)
+	if len(items) == 0 {
+		log.Warn("iterate: list is empty, nothing to process",
+			zap.String("iterate_list", flow.IterateList),
+		)
+		return cli_functions.FlowReport{}
+	}
+
+	itemVar := flow.ItemVariable
+	if itemVar == "" {
+		itemVar = "item"
+	}
+
+	rps := flow.RequestsPerSecond
+	testMode := opts.TestMode || rps <= 0
+
+	// Per-step metric accumulators.
+	stepBuckets := make(map[string]*stepMetricsBucket, len(flow.Steps))
+	for _, s := range flow.Steps {
+		stepBuckets[stepID(s)] = &stepMetricsBucket{}
+	}
+
+	var totalRequests, totalErrors int64
+	var allLatsMu sync.Mutex
+	var allLats []time.Duration
+	errByStatus := make(map[string]int64)
+	errByStep := make(map[string]int64)
+	var errMu sync.Mutex
+
+	recordResult := func(id string, res stepResult) {
+		failed := res.Err != nil || res.StatusCode >= 400
+		atomic.AddInt64(&totalRequests, 1)
+		if failed {
+			atomic.AddInt64(&totalErrors, 1)
+		}
+		allLatsMu.Lock()
+		allLats = append(allLats, res.Latency)
+		allLatsMu.Unlock()
+		stepBuckets[id].record(res.Latency, failed)
+		if failed {
+			errMu.Lock()
+			if res.StatusCode > 0 {
+				errByStatus[fmt.Sprintf("%d", res.StatusCode)]++
+			}
+			errByStep[id]++
+			errMu.Unlock()
+		}
+	}
+
+	// Compute interval between items.
+	var interval time.Duration
+	if testMode {
+		interval = 0
+	} else {
+		interval = time.Duration(float64(time.Second) / rps)
+	}
+
+	log.Info("iterate: starting",
+		zap.String("iterate_list", flow.IterateList),
+		zap.Int("items", len(items)),
+		zap.Float64("rps", rps),
+		zap.Duration("interval", interval),
+	)
+
+	iterStart := time.Now()
+
+	for i, item := range items {
+		if interval > 0 && i > 0 {
+			time.Sleep(interval)
+		}
+
+		fCtx := cli_functions.FlowContext{
+			"_base_url":   baseURL,
+			itemVar:       item,
+			"global":      bucket.Snapshot(),
+			"global_lists": bucket.SnapshotLists(),
+		}
+		if flow.Auth != "" {
+			if auth, ok := authMap[flow.Auth]; ok {
+				acquireToken(log, auth, baseURL, fCtx)
+			}
+		}
+
+		for _, step := range flow.Steps {
+			id := stepID(step)
+			res := executeStep(log, step, fCtx, authMap[flow.Auth])
+			recordResult(id, res)
+			if res.Err != nil || res.StatusCode >= 400 {
+				log.Debug("iterate: step failed",
+					zap.Int("item_index", i),
+					zap.String("step", id),
+					zap.Int("status", res.StatusCode),
+					zap.Error(res.Err),
+				)
+			} else {
+				applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
+			}
+		}
+	}
+
+	iterDuration := time.Since(iterStart)
+
+	// Build per-step reports.
+	stepReports := make([]cli_functions.StepReport, 0, len(flow.Steps))
+	for _, s := range flow.Steps {
+		id := stepID(s)
+		stepReports = append(stepReports, stepBuckets[id].toReport(id))
+	}
+
+	allLatsMu.Lock()
+	lats := make([]time.Duration, len(allLats))
+	copy(lats, allLats)
+	allLatsMu.Unlock()
+
+	errMu.Lock()
+	ebs := copyInt64Map(errByStatus)
+	ebStep := copyInt64Map(errByStep)
+	errMu.Unlock()
+
+	// RPS = total HTTP calls / wall-clock seconds.
+	rpsAchieved := 0.0
+	if iterDuration.Seconds() > 0 {
+		rpsAchieved = float64(totalRequests) / iterDuration.Seconds()
+	}
+
+	return cli_functions.FlowReport{
+		TotalRequests:      totalRequests,
+		SuccessfulRequests: totalRequests - totalErrors,
+		FailedRequests:     totalErrors,
+		RPSAchieved:        rpsAchieved,
+		AnalysisDurationS:  iterDuration.Seconds(),
+		LatencyMS:          computeLatencyStats(lats),
+		Steps:              stepReports,
+		ErrorsByStatus:     ebs,
+		ErrorsByStep:       ebStep,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,7 +1316,13 @@ func injectAuth(req *http.Request, auth configyml.AuthProfile, fCtx cli_function
 // ---------------------------------------------------------------------------
 
 // applyExtracts pulls values out of a JSON response body and stores them in fCtx.
-func applyExtracts(extractors []configyml.Extractor, body []byte, fCtx cli_functions.FlowContext) {
+// If an extractor has Global == true, the value is also written to the shared
+// GlobalBucket under the flow's own namespace, making it available to other
+// flows via {{ index .global "flow-name" "key" }}.
+// If an extractor has GlobalList == true, the value is appended to a list in
+// the GlobalBucket under the flow's own namespace, making it available to
+// iterate flows via {{ globalGetList "flow-name" "key" }}.
+func applyExtracts(extractors []configyml.Extractor, body []byte, fCtx cli_functions.FlowContext, flowName string, bucket *cli_functions.GlobalBucket) {
 	if len(extractors) == 0 || len(body) == 0 {
 		return
 	}
@@ -1147,6 +1334,12 @@ func applyExtracts(extractors []configyml.Extractor, body []byte, fCtx cli_funct
 		parts := strings.Split(e.Field, ".")
 		if val := navigate(parsed, parts); val != nil {
 			fCtx[e.As] = val
+			if e.Global {
+				bucket.Set(flowName, e.As, val)
+			}
+			if e.GlobalList {
+				bucket.AppendList(flowName, e.As, val)
+			}
 		}
 	}
 }
@@ -1213,7 +1406,11 @@ func arrayIndex(s string) int {
 //	timestampMs  — returns the current Unix timestamp in milliseconds as a string
 //	upper s      — converts s to upper-case
 //	lower s      — converts s to lower-case
-func tyaFuncMap() template.FuncMap {
+//	globalGet flowName key — reads a value from the global bucket snapshot
+//	                          stored in .global (equivalent to index .global flowName key)
+//	globalGetList flowName key — reads a list from the global bucket snapshot
+//	                              stored in .global_lists
+func tyaFuncMap(data map[string]any) template.FuncMap {
 	return template.FuncMap{
 		"uuid": func() string {
 			b := make([]byte, 16)
@@ -1247,6 +1444,39 @@ func tyaFuncMap() template.FuncMap {
 		},
 		"upper": strings.ToUpper,
 		"lower": strings.ToLower,
+		// globalGet looks up a value from the global bucket snapshot injected
+		// into the flow context as fCtx["global"]. It is a convenience
+		// alternative to {{ index .global "flow-name" "key" }}.
+		"globalGet": func(flowName, key string) any {
+			if data == nil {
+				return nil
+			}
+			g, ok := data["global"].(map[string]map[string]any)
+			if !ok {
+				return nil
+			}
+			ns, ok := g[flowName]
+			if !ok {
+				return nil
+			}
+			return ns[key]
+		},
+		// globalGetList looks up a list from the global bucket snapshot
+		// injected into the flow context as fCtx["global_lists"].
+		"globalGetList": func(flowName, key string) any {
+			if data == nil {
+				return nil
+			}
+			g, ok := data["global_lists"].(map[string]map[string][]any)
+			if !ok {
+				return nil
+			}
+			ns, ok := g[flowName]
+			if !ok {
+				return nil
+			}
+			return ns[key]
+		},
 	}
 }
 
@@ -1254,7 +1484,7 @@ func tyaFuncMap() template.FuncMap {
 // text/template against data. All functions from tyaFuncMap() are available.
 func renderTemplate(tmplStr string, data map[string]any) string {
 	tmplStr = os.ExpandEnv(tmplStr)
-	tmpl, err := template.New("").Funcs(tyaFuncMap()).Parse(tmplStr)
+	tmpl, err := template.New("").Funcs(tyaFuncMap(data)).Parse(tmplStr)
 	if err != nil {
 		return tmplStr
 	}

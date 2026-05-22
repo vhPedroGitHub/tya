@@ -10,6 +10,27 @@ TYA is a CLI tool designed to significantly improve how you test and load-test A
 - **Logging:** Structured logging via [`go.uber.org/zap`](https://pkg.go.dev/go.uber.org/zap).
 - **Documentation:** All commands, usage examples, and flags must be kept up to date in Markdown files inside the `docs/` folder (single `.md` per topic).
 
+### Linting — Mandatory After Every Code Change
+
+**Always run `golangci-lint` after every modification to Go source files.** Fix all reported issues before proceeding.
+
+```bash
+cd /opt/tya && golangci-lint run ./...
+```
+
+If `golangci-lint` is not installed:
+
+```bash
+curl -sL "https://github.com/golangci/golangci-lint/releases/download/v2.12.2/golangci-lint-2.12.2-linux-amd64.tar.gz" \
+  -o /tmp/gl.tar.gz && tar -xzf /tmp/gl.tar.gz -C /tmp && \
+  cp /tmp/golangci-lint-2.12.2-linux-amd64/golangci-lint /usr/local/bin/
+```
+
+- Pinned version: **v2.12.2** (matches `.github/workflows/lint.yml`).
+- Config: `/opt/tya/.golangci.yml` (v2 format, top-level `version: "2"`).
+- The binary is at `/usr/local/bin/golangci-lint` once installed; `$PATH` does not need updating.
+- **Never commit or push code that fails linting.**
+
 ### Starting the Demo App for Testing
 
 **Never use `pkill`/`kill` + `sleep` + restart in a single chained command** — it blocks the shell and causes timeouts.
