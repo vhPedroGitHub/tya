@@ -82,12 +82,18 @@ func GenerateExtractWithGlobalContext(extractors []configyml.Extractor, response
 			b.WriteString("            if (!ctx['__global__']) ctx['__global__'] = {};\n")
 			fmt.Fprintf(&b, "            if (!ctx['__global__']['%s']) ctx['__global__']['%s'] = {};\n", flowName, flowName)
 			fmt.Fprintf(&b, "            ctx['__global__']['%s']['%s'] = val;\n", flowName, e.As)
+			// Emit sentinel so runk6s can persist this value across subprocess boundaries
+			fmt.Fprintf(&b, "            console.log('TYA_GLOBAL: ' + JSON.stringify({flow:%s, key:%s, value:val, list:false}));\n",
+				JsString(flowName), JsString(e.As))
 		}
 		if e.GlobalList {
 			b.WriteString("            if (!ctx['__global_lists__']) ctx['__global_lists__'] = {};\n")
 			fmt.Fprintf(&b, "            if (!ctx['__global_lists__']['%s']) ctx['__global_lists__']['%s'] = {};\n", flowName, flowName)
 			fmt.Fprintf(&b, "            if (!ctx['__global_lists__']['%s']['%s']) ctx['__global_lists__']['%s']['%s'] = [];\n", flowName, e.As, flowName, e.As)
 			fmt.Fprintf(&b, "            ctx['__global_lists__']['%s']['%s'].push(val);\n", flowName, e.As)
+			// Emit sentinel so runk6s can persist this value across subprocess boundaries
+			fmt.Fprintf(&b, "            console.log('TYA_GLOBAL: ' + JSON.stringify({flow:%s, key:%s, value:val, list:true}));\n",
+				JsString(flowName), JsString(e.As))
 		}
 
 		b.WriteString("          }\n")
