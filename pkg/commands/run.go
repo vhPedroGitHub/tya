@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -921,6 +923,7 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx cli_functions.FlowCo
 
 	// Build request body.
 	var bodyReader io.Reader
+	var err error
 	switch step.PayloadStrategy {
 	case "fixed":
 		data, err := os.ReadFile(step.PayloadFile)
@@ -939,6 +942,46 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx cli_functions.FlowCo
 				bodyReader = strings.NewReader(fmt.Sprintf("%v", raw))
 			}
 		}
+
+	case "template-json":
+		// Load the base JSON: from PayloadFile if specified, otherwise random payload.
+		var baseData []byte
+		if step.PayloadFile != "" {
+			baseData, err = os.ReadFile(step.PayloadFile)
+			if err != nil {
+				return stepResult{Err: fmt.Errorf("template-json: read base file %s: %w", step.PayloadFile, err)}
+			}
+		} else {
+			payloadDir := filepath.Join("api",
+				strings.Trim(strings.ReplaceAll(renderTemplate(step.Endpoint, fCtx), "/", "_"), "_"),
+				strings.ToLower(strings.ToUpper(step.Method)),
+			)
+			baseData, err = randomPayload(payloadDir)
+			if err != nil {
+				return stepResult{Err: fmt.Errorf("template-json: load random payload from %s: %w", payloadDir, err)}
+			}
+		}
+		// Unmarshal into a generic map.
+		var obj map[string]any
+		if err = json.Unmarshal(baseData, &obj); err != nil {
+			return stepResult{Err: fmt.Errorf("template-json: parse base JSON: %w", err)}
+		}
+		// Apply each override: render the value template, then set it at the dot-path.
+		for path, tmplVal := range step.PayloadOverrides {
+			rendered := renderTemplate(tmplVal, fCtx)
+			// Try to unmarshal as JSON first (handles numbers, booleans, nested objects).
+			var parsed any
+			if json.Unmarshal([]byte(rendered), &parsed) == nil {
+				setNestedJSON(obj, path, parsed)
+			} else {
+				setNestedJSON(obj, path, rendered)
+			}
+		}
+		merged, err := json.Marshal(obj)
+		if err != nil {
+			return stepResult{Err: fmt.Errorf("template-json: marshal merged payload: %w", err)}
+		}
+		bodyReader = bytes.NewReader(merged)
 
 	default: // "random" or empty
 		payloadDir := filepath.Join("api",
@@ -1158,11 +1201,60 @@ func arrayIndex(s string) int {
 // Template rendering
 // ---------------------------------------------------------------------------
 
+// tyaFuncMap returns the template.FuncMap available in all TYA template strings.
+//
+// Available functions:
+//
+//	uuid         — returns a new random UUID v4 string (e.g. "a1b2c3d4-…")
+//	randomInt    — returns a random non-negative int as a string
+//	randomInt64  — returns a random non-negative int64 as a string
+//	randomDigits n — returns a string of n random decimal digits
+//	timestamp    — returns the current Unix timestamp in seconds as a string
+//	timestampMs  — returns the current Unix timestamp in milliseconds as a string
+//	upper s      — converts s to upper-case
+//	lower s      — converts s to lower-case
+func tyaFuncMap() template.FuncMap {
+	return template.FuncMap{
+		"uuid": func() string {
+			b := make([]byte, 16)
+			_, _ = crand.Read(b)
+			b[6] = (b[6] & 0x0f) | 0x40
+			b[8] = (b[8] & 0x3f) | 0x80
+			return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+				b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+		},
+		"randomInt": func() string {
+			return strconv.Itoa(rand.Int()) //nolint:gosec
+		},
+		"randomInt64": func() string {
+			return strconv.FormatInt(rand.Int63(), 10) //nolint:gosec
+		},
+		"randomDigits": func(n int) string {
+			if n <= 0 {
+				return ""
+			}
+			digits := make([]byte, n)
+			for i := range digits {
+				digits[i] = '0' + byte(rand.Intn(10)) //nolint:gosec
+			}
+			return string(digits)
+		},
+		"timestamp": func() string {
+			return strconv.FormatInt(time.Now().Unix(), 10)
+		},
+		"timestampMs": func() string {
+			return strconv.FormatInt(time.Now().UnixMilli(), 10)
+		},
+		"upper": strings.ToUpper,
+		"lower": strings.ToLower,
+	}
+}
+
 // renderTemplate expands ${ENV} variables and then renders s as a Go
-// text/template against data.
+// text/template against data. All functions from tyaFuncMap() are available.
 func renderTemplate(tmplStr string, data map[string]any) string {
 	tmplStr = os.ExpandEnv(tmplStr)
-	tmpl, err := template.New("").Parse(tmplStr)
+	tmpl, err := template.New("").Funcs(tyaFuncMap()).Parse(tmplStr)
 	if err != nil {
 		return tmplStr
 	}
@@ -1171,6 +1263,25 @@ func renderTemplate(tmplStr string, data map[string]any) string {
 		return tmplStr
 	}
 	return buf.String()
+}
+
+// setNestedJSON sets a value at a dot-notation path inside a JSON object.
+// For example, path "address.city" sets obj["address"]["city"] = value.
+// Intermediate maps are created as needed. Existing non-map values at
+// intermediate nodes are overwritten.
+func setNestedJSON(obj map[string]any, path string, value any) {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) == 1 {
+		obj[path] = value
+		return
+	}
+	key, rest := parts[0], parts[1]
+	child, ok := obj[key].(map[string]any)
+	if !ok {
+		child = map[string]any{}
+		obj[key] = child
+	}
+	setNestedJSON(child, rest, value)
 }
 
 // ---------------------------------------------------------------------------

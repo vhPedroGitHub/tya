@@ -222,14 +222,22 @@ type WireFlow struct {
 
 // Step is one HTTP request inside a flow.
 type Step struct {
-	ID              string      `yaml:"id,omitempty"`
-	Endpoint        string      `yaml:"endpoint"`
-	Method          string      `yaml:"method"`
-	PayloadStrategy string      `yaml:"payload_strategy,omitempty"` // random | fixed | template | extracted
-	PayloadFile     string      `yaml:"payload_file,omitempty"`
-	PayloadTemplate string      `yaml:"payload_template,omitempty"`
-	FromStep        string      `yaml:"from_step,omitempty"`
-	Extract         []Extractor `yaml:"extract,omitempty"`
+	ID              string            `yaml:"id,omitempty"`
+	Endpoint        string            `yaml:"endpoint"`
+	Method          string            `yaml:"method"`
+	// PayloadStrategy controls how the request body is built.
+	// Supported values: random | fixed | template | extracted | template-json
+	PayloadStrategy  string            `yaml:"payload_strategy,omitempty"`
+	PayloadFile      string            `yaml:"payload_file,omitempty"`
+	PayloadTemplate  string            `yaml:"payload_template,omitempty"`
+	// PayloadOverrides is used with strategy "template-json".
+	// Each key is a dot-notation JSON path (e.g. "email", "address.city") and
+	// each value is a Go template string rendered against the flow context.
+	// The base JSON is loaded from PayloadFile (or a random payload when empty),
+	// then the overrides are applied on top before sending the request.
+	PayloadOverrides map[string]string `yaml:"payload_overrides,omitempty"`
+	FromStep         string            `yaml:"from_step,omitempty"`
+	Extract          []Extractor       `yaml:"extract,omitempty"`
 }
 
 // Extractor pulls a value from a step's response into the flow context.

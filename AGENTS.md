@@ -10,6 +10,24 @@ TYA is a CLI tool designed to significantly improve how you test and load-test A
 - **Logging:** Structured logging via [`go.uber.org/zap`](https://pkg.go.dev/go.uber.org/zap).
 - **Documentation:** All commands, usage examples, and flags must be kept up to date in Markdown files inside the `docs/` folder (single `.md` per topic).
 
+### Starting the Demo App for Testing
+
+**Never use `pkill`/`kill` + `sleep` + restart in a single chained command** — it blocks the shell and causes timeouts.
+
+Instead, always do it in separate steps:
+
+1. Check if the app is already running: `pgrep -fa bin/app`
+2. If not running, start it: `nohup /opt/tya/bin/app > /tmp/app.log 2>&1 &`
+3. Poll until ready (do **not** use `sleep N`):
+   ```bash
+   for i in $(seq 1 10); do
+     curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login \
+       -d '{}' -H 'Content-Type: application/json' && break
+     sleep 1
+   done
+   ```
+4. Register / seed test data only if the user doesn't already exist (a 409 is fine to ignore).
+
 ### Project Structure
 
 ```
