@@ -6,6 +6,24 @@ Built with **Go** and **Cobra**.
 
 ---
 
+## Why use TYA?
+
+Most API testing tools make you choose between simplicity and power. Simple tools (curl scripts, Postman collections) fall apart the moment you need to chain requests — you can't feed the ID from a `POST /users` response into a `DELETE /users/{id}` without writing glue code. Powerful tools (k6, Gatling, Locust) require you to learn a scripting language or a DSL just to describe what your API already documents in OpenAPI.
+
+TYA takes a different approach:
+
+**Your OpenAPI spec is the source of truth.** Run `tya create openapi.yaml` and TYA generates typed, realistic payloads for every endpoint automatically — no hand-writing JSON fixtures, no placeholder data that breaks your validations.
+
+**Flows are plain YAML, not code.** You describe *what* should happen (chain these endpoints, extract this ID, use it here), and TYA handles *how* — goroutine scheduling, token refresh, RPS pacing, latency collection. A flow that registers a user, logs in, creates a resource, and deletes it is ~20 lines of config.
+
+**The execution model is honest.** `requests_per_second` means exactly that — flow iterations per second, not raw HTTP calls. The goroutine pool is sized by your latency, not by a pre-configured thread count you have to tune. Results in the JSON report match what you configured.
+
+**Test mode prevents surprises.** `tya run -t` executes every flow exactly once before you commit to a load run, so you catch config mistakes (wrong endpoint, bad payload template, broken auth) in seconds rather than discovering them mid-test.
+
+**It runs everywhere your code runs.** A single static binary with no runtime dependencies. Works in CI, in Docker, on a developer laptop — the same binary, the same config, the same results.
+
+---
+
 ## Features
 
 - **OpenAPI-driven payload generation** — point TYA at your OpenAPI v3 spec and it generates realistic, type-aware JSON payloads using `gofakeit`, one file per endpoint + method.

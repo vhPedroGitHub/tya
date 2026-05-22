@@ -109,7 +109,11 @@ func runFlows(log *zap.Logger, opts *models.RunOptions) error {
 	// Sort flows into topological execution order.
 	flows = cli_functions.TopologicalOrder(flows)
 
-	baseURL := os.Getenv("TYA_BASE_URL")
+	// TYA_BASE_URL env var overrides config-run.yml base_url.
+	baseURL := cfg.BaseURL
+	if env := os.Getenv("TYA_BASE_URL"); env != "" {
+		baseURL = env
+	}
 	startedAt := time.Now()
 
 	// Build the executor functions that close over logger, authMap, opts, baseURL.
@@ -221,7 +225,8 @@ func executeFlow(
 	}
 
 	// Global counters.
-	var totalRequests, totalErrors int64
+	// totalRequests counts individual HTTP calls; totalIterations counts full flow executions.
+	var totalRequests, totalErrors, totalIterations int64
 	var allLatsMu sync.Mutex
 	var allLats []time.Duration
 
@@ -285,6 +290,7 @@ func executeFlow(
 			lastCtx = snap
 			lastCtxMu.Unlock()
 		}
+		atomic.AddInt64(&totalIterations, 1)
 	} else {
 		// Load test mode.
 		runCtx, cancel := context.WithTimeout(context.Background(), duration)
@@ -321,12 +327,13 @@ func executeFlow(
 							applyExtracts(step.Extract, res.Body, fCtx)
 						}
 					}
-					if iterOK {
-						lastCtxMu.Lock()
-						lastCtx = copyContext(fCtx)
-						lastCtxMu.Unlock()
-					}
-				}()
+				if iterOK {
+					lastCtxMu.Lock()
+					lastCtx = copyContext(fCtx)
+					lastCtxMu.Unlock()
+				}
+				atomic.AddInt64(&totalIterations, 1)
+			}()
 			}
 		}
 		wg.Wait()
@@ -348,14 +355,14 @@ func executeFlow(
 
 	successful := totalRequests - totalErrors
 	rpsAchieved := 0.0
-	if len(lats) > 0 {
-		// Approximate: total requests / total elapsed wall-clock time.
-		// We do not track elapsed here precisely; use totalRequests / duration.
+	if totalIterations > 0 {
+		// RPS = flow iterations per second (not individual HTTP calls per second).
+		// This matches what the user configured as requests_per_second.
 		dur := duration.Seconds()
 		if opts.TestMode {
 			dur = 1
 		}
-		rpsAchieved = float64(totalRequests) / dur
+		rpsAchieved = float64(totalIterations) / dur
 	}
 
 	errMu.Lock()
