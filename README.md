@@ -16,7 +16,7 @@ TYA takes a different approach:
 
 **Flows are plain YAML, not code.** You describe *what* should happen (chain these endpoints, extract this ID, use it here), and TYA handles *how* — goroutine scheduling, token refresh, RPS pacing, latency collection. A flow that registers a user, logs in, creates a resource, and deletes it is ~20 lines of config.
 
-**The execution model is honest.** `requests_per_second` means exactly that — flow iterations per second, not raw HTTP calls. The goroutine pool is sized by your latency, not by a pre-configured thread count you have to tune. Results in the JSON report match what you configured.
+**The execution model is honest.** `requests_per_second` means exactly that — HTTP calls per second, regardless of how many steps a flow has. The goroutine pool is sized by your latency, not by a pre-configured thread count you have to tune. Results in the JSON report match what you configured.
 
 **Test mode prevents surprises.** `tya run -t` executes every flow exactly once before you commit to a load run, so you catch config mistakes (wrong endpoint, bad payload template, broken auth) in seconds rather than discovering them mid-test.
 
@@ -76,7 +76,20 @@ See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough.
 
 ## Upcoming Features
 
-_Nothing here yet — watch this space._
+### Redis-backed Distributed Load Testing
+
+> **Goal:** reach RPS targets (e.g. 1,000,000 req/s) that are not achievable from a single machine by coordinating multiple TYA instances through a shared Redis counter.
+
+Each TYA node runs independently and ramps up to its locally-configured `requests_per_second`. On every iteration, before sending the next request, the node consults Redis:
+
+- A global key `tya:<run_id>:max_rps` holds the cluster-wide RPS ceiling.
+- A global key `tya:<run_id>:current_rps` holds the live aggregate RPS across all nodes, updated atomically.
+- Each node tracks whether its own RPS went up or down since the last window and **adds or subtracts its delta** from `current_rps` in Redis (`INCRBYFLOAT`).
+- If `current_rps ≥ max_rps`, the node stops growing (holds its current rate) until the aggregate drops back below the ceiling.
+
+This allows tens or hundreds of TYA instances to collectively saturate high-capacity systems without any centralised controller — each node is self-regulating and the aggregate converges on the global target.
+
+See [docs/redis-distributed.md](docs/redis-distributed.md) for the detailed design proposal.
 
 ---
 
