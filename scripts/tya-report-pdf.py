@@ -333,9 +333,31 @@ def build_pdf(report: dict, output_path: str) -> None:
         max_conc = flow.get("max_concurrency", 0)
         think_ms = flow.get("think_time_applied_ms", 0)
         max_reached = flow.get("stable_rps_max_reached", False)
+        forced_plateau = flow.get("forced_plateau", False)
+        forced_reason = flow.get("forced_plateau_reason", "")
+        forced_rps = flow.get("forced_plateau_rps", 0)
+        neg_resets = flow.get("negative_resets", 0)
+        iters_per_s = flow.get("iterations_per_second", 0)
 
         if ramp_s > 0 or avg_conc > 0:
             story.append(Paragraph("Adaptive Engine Metrics", h3_style))
+
+            # Status badge for forced plateau
+            if forced_plateau:
+                reason_label = {
+                    "negative_resets": "Forced (negative resets)",
+                    "timeout": "Forced (timeout)",
+                }.get(forced_reason, f"Forced ({forced_reason})")
+                plateau_colour = RED.hexval()
+            else:
+                reason_label = "Natural"
+                plateau_colour = GREEN.hexval()
+
+            plateau_cell = Paragraph(
+                f'<font color="{plateau_colour}"><b>{reason_label}</b></font>',
+                body_style,
+            )
+
             engine_data = [
                 ["Ramp-up duration", f"{ramp_s:.2f} s",
                  "Analysis duration", f"{flow.get('analysis_duration_s', 0):.2f} s"],
@@ -343,6 +365,10 @@ def build_pdf(report: dict, output_path: str) -> None:
                  "Max concurrency", str(max_conc)],
                 ["Mean think-time", _fmt_ms(think_ms),
                  "Target RPS reached", "No ⚠" if max_reached else "Yes"],
+                ["Negative resets", str(neg_resets),
+                 "Iterations/s", _fmt_float(iters_per_s, 2)],
+                ["Plateau type", plateau_cell,
+                 "Forced plateau RPS", _fmt_float(forced_rps, 2) if forced_plateau else "—"],
             ]
             engine_table = Table(engine_data, colWidths=[3.5*cm, 3.5*cm, 3.5*cm, 3.5*cm])
             engine_table.setStyle(TableStyle([
@@ -360,6 +386,65 @@ def build_pdf(report: dict, output_path: str) -> None:
             ]))
             story.append(engine_table)
             story.append(Spacer(1, 0.4 * cm))
+
+            # Ramp-up windows diagnostic table
+            ramp_windows = flow.get("ramp_up_windows", [])
+            if ramp_windows:
+                story.append(Paragraph("Ramp-up Windows", h3_style))
+                story.append(Paragraph(
+                    "Per-window diagnostics recorded during the ramp-up phase. "
+                    "Negative resets (RPS dropped vs previous window) are highlighted in red.",
+                    small_style,
+                ))
+                story.append(Spacer(1, 0.2 * cm))
+                win_header = [
+                    Paragraph("<b>#</b>", body_style),
+                    Paragraph("<b>Target RPS</b>", body_style),
+                    Paragraph("<b>Observed RPS</b>", body_style),
+                    Paragraph("<b>Variation</b>", body_style),
+                    Paragraph("<b>Stable</b>", body_style),
+                    Paragraph("<b>Neg. Reset</b>", body_style),
+                    Paragraph("<b>Consec. Neg.</b>", body_style),
+                ]
+                win_rows = [win_header]
+                neg_row_indices = []
+                for i, w in enumerate(ramp_windows, start=1):
+                    is_neg = w.get("negative_reset", False)
+                    if is_neg:
+                        neg_row_indices.append(i)  # 1-based, header is row 0
+                    var_pct = w.get("variation", 0) * 100
+                    var_str = f"{var_pct:+.1f}%"
+                    stable_str = "Yes" if w.get("stable") else "No"
+                    neg_str = "Yes" if is_neg else ""
+                    win_rows.append([
+                        str(w.get("window_index", i)),
+                        _fmt_float(w.get("target_rps", 0), 2),
+                        _fmt_float(w.get("observed_rps", 0), 2),
+                        var_str,
+                        stable_str,
+                        neg_str,
+                        str(w.get("consecutive_negative_resets", 0)) if is_neg else "",
+                    ])
+                win_col_w = [1.0*cm, 2.5*cm, 2.8*cm, 2.2*cm, 1.8*cm, 2.2*cm, 2.5*cm]
+                win_table = Table(win_rows, colWidths=win_col_w, repeatRows=1)
+                win_style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), ACCENT),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT_GRAY, WHITE]),
+                    ("GRID", (0, 0), (-1, -1), 0.3, MID_GRAY),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ]
+                # Highlight negative-reset rows in red background
+                for row_i in neg_row_indices:
+                    win_style.append(("BACKGROUND", (0, row_i), (-1, row_i), colors.HexColor("#fde8e8")))
+                    win_style.append(("TEXTCOLOR", (5, row_i), (5, row_i), RED))
+                win_table.setStyle(TableStyle(win_style))
+                story.append(win_table)
+                story.append(Spacer(1, 0.4 * cm))
 
         # Steps table
         steps = flow.get("steps", [])

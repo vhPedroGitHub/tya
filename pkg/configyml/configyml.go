@@ -134,6 +134,18 @@ type RampUp struct {
 	// consecutive measurement windows that is considered "stable"
 	// (default: 0.05, i.e. 5 %).
 	StabilityThreshold float64 `yaml:"stability_threshold,omitempty"`
+	// MaxRampDuration is the maximum wall-clock time allowed for the ramp-up
+	// phase before a forced plateau is declared (default: "600s").
+	MaxRampDuration string `yaml:"max_ramp_duration,omitempty"`
+	// MaxNegativeResets is the total number of negative resets (windows where
+	// observed RPS drops below the previous window, not necessarily consecutive)
+	// that triggers a forced plateau using the average of the best stable
+	// windows seen so far (default: 3).
+	MaxNegativeResets int `yaml:"max_negative_resets,omitempty"`
+	// BestWindowsAvg is the number of top stable windows (closest to target
+	// RPS) used to compute the forced-plateau RPS when MaxNegativeResets is
+	// exceeded (default: 3).
+	BestWindowsAvg int `yaml:"best_windows_avg,omitempty"`
 }
 
 // rampUpDefaults returns a RampUp with every field set to its default value.
@@ -144,6 +156,9 @@ func rampUpDefaults() RampUp {
 		StepWindow:         "2s",
 		StabilityWindows:   3,
 		StabilityThreshold: 0.05,
+		MaxRampDuration:    "600s",
+		MaxNegativeResets:  3,
+		BestWindowsAvg:     3,
 	}
 }
 
@@ -164,6 +179,15 @@ func (r RampUp) Resolve() RampUp {
 	}
 	if r.StabilityThreshold <= 0 {
 		r.StabilityThreshold = d.StabilityThreshold
+	}
+	if r.MaxRampDuration == "" {
+		r.MaxRampDuration = d.MaxRampDuration
+	}
+	if r.MaxNegativeResets <= 0 {
+		r.MaxNegativeResets = d.MaxNegativeResets
+	}
+	if r.BestWindowsAvg <= 0 {
+		r.BestWindowsAvg = d.BestWindowsAvg
 	}
 	return r
 }

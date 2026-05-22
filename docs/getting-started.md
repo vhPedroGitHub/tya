@@ -93,6 +93,8 @@ Each payload is seeded with realistic fake data via `gofakeit`, respecting field
 
 Replace the contents of `config-run.yml` with the following. This defines a **person lifecycle** end-to-end flow: create a person, fetch it by ID, patch its phone, then delete it. Every step reuses the `id` returned by the first step — no hardcoded IDs.
 
+The `ramp_up` block demonstrates all the new adaptive engine options, including negative-reset detection and the ramp-up timeout:
+
 ```yaml
 base_url: http://localhost:8080
 
@@ -122,6 +124,15 @@ flows:
     duration: 60s
     requests_per_second: 20
     auth: app-user
+    ramp_up:
+      initial_rps: 2             # Start at 2 HTTP calls/s (default: 1)
+      factor: 1.5                # Multiply by 1.5 each step window (default: 1.5)
+      step_window: 2s            # Measure for 2 s before growing (default: 2s)
+      stability_windows: 3       # 3 consecutive stable windows = natural plateau (default: 3)
+      stability_threshold: 0.05  # ±5% variation = stable (default: 0.05)
+      max_ramp_duration: 60s     # Force plateau after 60 s regardless (default: 600s)
+      max_negative_resets: 3     # Force plateau after 3 total negative resets (default: 3)
+      best_windows_avg: 3        # Average best 3 stable windows for forced RPS (default: 3)
     steps:
       - id: create-person
         endpoint: /persons
@@ -193,13 +204,81 @@ INFO  report written      {"path": "tya-report-20250101-120000.json"}
 tya run
 ```
 
-TYA spins up a goroutine pool targeting 20 RPS for 60 seconds. Each goroutine runs the full four-step lifecycle independently with its own token and its own person record — no shared state, no race conditions.
-
-At the end it writes a JSON report:
+TYA ramps up gradually to 20 HTTP calls/s (= 5 goroutines/s × 4 steps) and then holds the stable window for 60 seconds. You'll see ramp-up diagnostics in the log:
 
 ```
-tya-report-20250101-120000.json
+INFO  ramp-up window  {"window": 1, "current_http_rps_target": 2, "observed_http_rps": 1.5, "stable": false, "negative_reset": false}
+INFO  ramp-up window  {"window": 2, "current_http_rps_target": 3, "observed_http_rps": 3.0, "stable": false, "negative_reset": false}
+INFO  ramp-up window  {"window": 3, "current_http_rps_target": 4.5, "observed_http_rps": 2.8, "stable": false, "negative_reset": true,  "consecutive_negative_resets": 1}
+INFO  ramp-up window  {"window": 4, "current_http_rps_target": 6.75, "observed_http_rps": 6.5, "stable": false, "negative_reset": false}
+INFO  ramp-up window  {"window": 5, "current_http_rps_target": 20, "observed_http_rps": 19.4, "stable": false, "negative_reset": false}
+INFO  ramp-up window  {"window": 6, "current_http_rps_target": 20, "observed_http_rps": 19.8, "stable": true,  "negative_reset": false}
+INFO  ramp-up window  {"window": 7, "current_http_rps_target": 20, "observed_http_rps": 19.9, "stable": true,  "negative_reset": false}
+INFO  plateau reached  {"ramp_up_duration_s": 14.0, "stable_rps": 20, "forced_plateau": false}
+INFO  report written   {"path": "tya-report-20250101-120000.json"}
 ```
+
+> **Negative reset example:** window 3 shows `"negative_reset": true` — the observed RPS dropped from 3.0 to 2.8. This counts towards `max_negative_resets`. If 3 total negative resets accumulate before a natural plateau, TYA forces the plateau using the average of the best stable windows seen so far.
+
+The JSON report includes the full ramp-up window history and engine diagnostics:
+
+```json
+{
+  "name": "person-lifecycle",
+  "type": "end-to-end",
+  "total_requests": 1200,
+  "successful_requests": 1200,
+  "failed_requests": 0,
+  "rps_achieved": 19.9,
+  "iterations_per_second": 4.97,
+  "stable_rps_target": 20.0,
+  "stable_rps_achieved": 19.9,
+  "stable_rps_max_reached": false,
+  "forced_plateau": false,
+  "forced_plateau_reason": "",
+  "forced_plateau_rps": 0,
+  "negative_resets": 1,
+  "ramp_up_duration_s": 14.0,
+  "analysis_duration_s": 60.1,
+  "avg_concurrency": 5.0,
+  "max_concurrency": 7,
+  "think_time_applied_ms": 163.2,
+  "ramp_up_windows": [
+    {"window_index": 1, "target_rps": 2,    "observed_rps": 1.5,  "variation": 0,      "stable": false, "negative_reset": false, "consecutive_negative_resets": 0},
+    {"window_index": 2, "target_rps": 3,    "observed_rps": 3.0,  "variation": 1.0,    "stable": false, "negative_reset": false, "consecutive_negative_resets": 0},
+    {"window_index": 3, "target_rps": 4.5,  "observed_rps": 2.8,  "variation": -0.067, "stable": false, "negative_reset": true,  "consecutive_negative_resets": 1},
+    {"window_index": 4, "target_rps": 6.75, "observed_rps": 6.5,  "variation": 1.32,   "stable": false, "negative_reset": false, "consecutive_negative_resets": 0},
+    {"window_index": 5, "target_rps": 20,   "observed_rps": 19.4, "variation": 1.98,   "stable": false, "negative_reset": false, "consecutive_negative_resets": 0},
+    {"window_index": 6, "target_rps": 20,   "observed_rps": 19.8, "variation": 0.021,  "stable": true,  "negative_reset": false, "consecutive_negative_resets": 0},
+    {"window_index": 7, "target_rps": 20,   "observed_rps": 19.9, "variation": 0.005,  "stable": true,  "negative_reset": false, "consecutive_negative_resets": 0}
+  ],
+  "latency_ms": {"min": 0.2, "mean": 0.5, "p50": 0.4, "p90": 0.8, "p95": 1.1, "p99": 3.2, "max": 48.1},
+  "steps": [ ... ],
+  "children": [ ... ]
+}
+```
+
+**Reading the ramp-up windows:**
+
+| Field | Meaning |
+|-------|---------|
+| `target_rps` | HTTP calls/s the ticker was aiming for in this window |
+| `observed_rps` | Actual HTTP calls/s measured during the window |
+| `variation` | Signed relative change vs previous window (`(curr−prev)/prev`) |
+| `stable` | `true` when `abs(variation) ≤ stability_threshold` |
+| `negative_reset` | `true` when `observed_rps < prev window's observed_rps` |
+| `consecutive_negative_resets` | Running count of back-to-back negative resets (diagnostic only) |
+
+**Forced plateau example** — if the system were struggling and accumulated 3 negative resets before stabilising, the report would show:
+
+```json
+"forced_plateau": true,
+"forced_plateau_reason": "negative_resets",
+"forced_plateau_rps": 14.2,
+"negative_resets": 3
+```
+
+TYA then runs the analysis window at 14.2 HTTP calls/s (the average of the 3 stable windows closest to the target) instead of waiting indefinitely.
 
 ### Step 7 — Generate a PDF report
 
@@ -209,7 +288,14 @@ python scripts/tya-report-pdf.py tya-report-20250101-120000.json
 # Report written to tya-report-20250101-120000.pdf
 ```
 
-The PDF includes a summary table across all flows, per-flow latency percentiles (p50/p95/p99), per-step breakdowns, and the wire-flow child results.
+The PDF includes:
+- **Summary table** — one row per flow: requests, errors, error%, RPS target vs actual, ramp duration, p50/p95/p99.
+- **Per-flow detail page** — KPIs, full latency breakdown, and an **Adaptive Engine Metrics** table:
+  - Ramp/analysis duration, avg/max concurrency, mean think-time.
+  - Plateau type: `Natural` (green) or `Forced (negative resets)` / `Forced (timeout)` (red).
+  - `Negative resets` count and `Iterations/s`.
+- **Ramp-up Windows table** — one row per window with target RPS, observed RPS, variation %, stable flag, and negative-reset flag. Rows with a negative reset are highlighted in red.
+- **Per-step breakdown** and **wire-flow children** results.
 
 ---
 

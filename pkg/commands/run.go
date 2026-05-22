@@ -321,14 +321,31 @@ func executeFlow(
 		if err != nil {
 			stepWin = 2 * time.Second
 		}
+		maxRampDur, err := time.ParseDuration(rampCfg.MaxRampDuration)
+		if err != nil {
+			maxRampDur = 600 * time.Second
+		}
+
+		// nSteps is used to convert between iteration rate and HTTP-call rate.
+		// ticker fires at (currentRPS / nSteps) iterations/s so that the
+		// actual HTTP call rate equals currentRPS calls/s.
+		nSteps := float64(len(flow.Steps))
+		if nSteps < 1 {
+			nSteps = 1
+		}
 
 		currentRPS := rampCfg.InitialRPS
 		targetRPS := flow.RequestsPerSecond
 
+		// tickInterval returns the ticker period required to produce the given
+		// HTTP-calls/s rate with nSteps per iteration.
+		tickInterval := func(httpRPS float64) time.Duration {
+			return time.Duration(float64(time.Second) * nSteps / httpRPS)
+		}
+
 		// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
-		// Initial cap = ceil(targetRPS * 10) — generous upper bound that gets
-		// refined after plateau is detected via observed p95 latency.
-		semCap := int(targetRPS*10) + 1
+		// Initial cap based on targetRPS (HTTP calls/s) converted to iterations/s.
+		semCap := int(targetRPS/nSteps*10) + 1
 		if semCap < 8 {
 			semCap = 8
 		}
@@ -387,13 +404,10 @@ func executeFlow(
 					lastCtxMu.Unlock()
 				}
 
-				// Think-time: sleep the remainder of the target iteration
-				// duration so that this goroutine self-regulates its pace.
-				// The slot is held during the sleep (occupies the semaphore).
-				nSteps := float64(len(flow.Steps))
-				if nSteps < 1 {
-					nSteps = 1
-				}
+				// Think-time: sleep the remainder of the target iteration duration
+				// so that this goroutine self-regulates its pace.
+				// targetIterDur = nSteps / launchRPS  (seconds per iteration
+				// when the goal is launchRPS HTTP calls/s with nSteps steps).
 				targetIterDur := time.Duration(float64(time.Second) * nSteps / launchRPS)
 				elapsed := time.Since(iterStart)
 				if thinkTime := targetIterDur - elapsed; thinkTime > 0 {
@@ -412,9 +426,70 @@ func executeFlow(
 		prevWindowRPS := 0.0
 		maxReached := false
 
+		// Forced-plateau tracking.
+		forcedPlateau := false
+		forcedPlateauReason := ""
+		forcedPlateauRPS := 0.0
+		negativeResets := 0        // total negative resets observed
+		consecNegResets := 0       // consecutive negative resets (resets on drop)
+		var rampWindows []cli_functions.RampUpWindow
+		// stableWindowRPS holds the observed RPS of every stable window,
+		// used to compute the best-N average on a forced plateau.
+		var stableWindowRPS []float64
+
+		rampTimeout := time.NewTimer(maxRampDur)
+		defer rampTimeout.Stop()
+
+		// bestWindowsRPS returns the average of the top-K stable window RPS
+		// values (closest to targetRPS). Falls back to the overall average if
+		// fewer than K stable windows were recorded.
+		bestWindowsRPS := func() float64 {
+			if len(stableWindowRPS) == 0 {
+				return prevWindowRPS
+			}
+			// Sort descending by closeness to target (minimise |rps - target|).
+			sorted := make([]float64, len(stableWindowRPS))
+			copy(sorted, stableWindowRPS)
+			k := rampCfg.BestWindowsAvg
+			// Simple selection of best k by proximity to target.
+			for i := 0; i < len(sorted)-1; i++ {
+				for j := i + 1; j < len(sorted); j++ {
+					if abs64(sorted[j]-targetRPS) < abs64(sorted[i]-targetRPS) {
+						sorted[i], sorted[j] = sorted[j], sorted[i]
+					}
+				}
+			}
+			if k > len(sorted) {
+				k = len(sorted)
+			}
+			sum := 0.0
+			for _, v := range sorted[:k] {
+				sum += v
+			}
+			return sum / float64(k)
+		}
+
+		winIdx := 0
+	rampLoop:
 		for {
+			// Check ramp-up timeout before starting the next window.
+			select {
+			case <-rampTimeout.C:
+				forcedPlateau = true
+				forcedPlateauReason = "timeout"
+				forcedPlateauRPS = bestWindowsRPS()
+				currentRPS = forcedPlateauRPS
+				log.Warn("ramp-up: timeout reached, forcing plateau",
+					zap.Float64("max_ramp_duration_s", maxRampDur.Seconds()),
+					zap.Float64("forced_plateau_rps", forcedPlateauRPS),
+				)
+				break rampLoop
+			default:
+			}
+
+			winIdx++
 			windowItersBefore := atomic.LoadInt64(&totalIterations)
-			ticker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+			ticker := time.NewTicker(tickInterval(currentRPS))
 			winTimer := time.NewTimer(stepWin)
 		rampWindow:
 			for {
@@ -430,25 +505,78 @@ func executeFlow(
 			winTimer.Stop()
 
 			windowIters := atomic.LoadInt64(&totalIterations) - windowItersBefore
-			windowRPS := float64(windowIters) / stepWin.Seconds()
+			// Convert iterations to HTTP calls/s for comparison against targetRPS.
+			windowRPS := float64(windowIters) * nSteps / stepWin.Seconds()
 
-			log.Info("ramp-up window",
-				zap.Float64("current_rps_target", currentRPS),
-				zap.Float64("observed_rps", windowRPS),
-				zap.Float64("target_rps", targetRPS),
-			)
+			// ── Stability and negative-reset analysis ──────────────────────
+			variation := 0.0
+			isStable := false
+			isNegReset := false
 
-			// Check stability: is the observed RPS within threshold of previous window?
 			if prevWindowRPS > 0 {
-				variation := abs64((windowRPS - prevWindowRPS) / prevWindowRPS)
-				if variation <= rampCfg.StabilityThreshold {
+				variation = (windowRPS - prevWindowRPS) / prevWindowRPS // signed
+				absVar := abs64(variation)
+				isNegReset = windowRPS < prevWindowRPS
+				isStable = absVar <= rampCfg.StabilityThreshold
+
+				if isStable {
 					stableWindows++
+					stableWindowRPS = append(stableWindowRPS, windowRPS)
+					consecNegResets = 0
 				} else {
 					stableWindows = 0
+					if isNegReset {
+						negativeResets++
+						consecNegResets++
+						log.Warn("ramp-up: negative reset detected",
+							zap.Int("window", winIdx),
+							zap.Float64("prev_rps", prevWindowRPS),
+							zap.Float64("current_rps", windowRPS),
+							zap.Int("consecutive_negative_resets", consecNegResets),
+						)
+					} else {
+						consecNegResets = 0
+					}
 				}
 			}
+
+			win := cli_functions.RampUpWindow{
+				WindowIndex:               winIdx,
+				TargetRPS:                 currentRPS,
+				ObservedRPS:               windowRPS,
+				Variation:                 variation,
+				Stable:                    isStable,
+				NegativeReset:             isNegReset,
+				ConsecutiveNegativeResets: consecNegResets,
+			}
+			rampWindows = append(rampWindows, win)
+
+			log.Info("ramp-up window",
+				zap.Int("window", winIdx),
+				zap.Float64("current_http_rps_target", currentRPS),
+				zap.Float64("observed_http_rps", windowRPS),
+				zap.Float64("target_http_rps", targetRPS),
+				zap.Bool("stable", isStable),
+				zap.Bool("negative_reset", isNegReset),
+				zap.Int("consecutive_negative_resets", consecNegResets),
+			)
+
 			prevWindowRPS = windowRPS
 
+			// ── Forced plateau: too many accumulated negative resets ───────
+			if negativeResets >= rampCfg.MaxNegativeResets {
+				forcedPlateau = true
+				forcedPlateauReason = "negative_resets"
+				forcedPlateauRPS = bestWindowsRPS()
+				currentRPS = forcedPlateauRPS
+				log.Warn("ramp-up: max negative resets reached, forcing plateau",
+					zap.Int("total_negative_resets", negativeResets),
+					zap.Float64("forced_plateau_rps", forcedPlateauRPS),
+				)
+				break rampLoop
+			}
+
+			// ── Natural plateau ─────────────────────────────────────────────
 			if stableWindows >= rampCfg.StabilityWindows {
 				if windowRPS < targetRPS*0.95 {
 					maxReached = true
@@ -457,7 +585,7 @@ func executeFlow(
 						zap.Float64("achieved_rps", windowRPS),
 					)
 				}
-				break
+				break rampLoop
 			}
 
 			// Grow towards target.
@@ -470,19 +598,18 @@ func executeFlow(
 			currentRPS = nextRPS
 
 			// Recalculate semaphore cap using observed p95 latency estimate.
-			// cap = ceil(currentRPS * p95_s * 1.5), minimum 8.
 			allLatsMu.Lock()
 			latSnap := make([]time.Duration, len(allLats))
 			copy(latSnap, allLats)
 			allLatsMu.Unlock()
 			if len(latSnap) > 0 {
 				stats := computeLatencyStats(latSnap)
-				p95s := stats.P95 / 1000.0
-				newCap := int(currentRPS*p95s*1.5) + 1
+				p95IterS := (stats.P95 / 1000.0) * nSteps
+				iterRPS := currentRPS / nSteps
+				newCap := int(iterRPS*p95IterS*1.5) + 1
 				if newCap < 8 {
 					newCap = 8
 				}
-				// Grow the semaphore if needed (never shrink during ramp).
 				if newCap > semCap {
 					semCap = newCap
 					sem = make(chan struct{}, semCap)
@@ -522,6 +649,9 @@ func executeFlow(
 			zap.Float64("ramp_up_duration_s", rampDuration.Seconds()),
 			zap.Float64("stable_rps", currentRPS),
 			zap.Duration("analysis_duration", duration),
+			zap.Bool("forced_plateau", forcedPlateau),
+			zap.String("forced_plateau_reason", forcedPlateauReason),
+			zap.Int("total_negative_resets", negativeResets),
 		)
 
 		// ── Phase 3: Analysis window ─────────────────────────────────────────
@@ -530,7 +660,7 @@ func executeFlow(
 		runCtx, cancel := context.WithTimeout(context.Background(), duration)
 		defer cancel()
 
-		analysisTicker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+		analysisTicker := time.NewTicker(tickInterval(currentRPS))
 		defer analysisTicker.Stop()
 
 	analysisLoop:
@@ -583,7 +713,9 @@ func executeFlow(
 		}
 
 		// Override the simple rpsAchieved calculation with analysis-window measurement.
-		rpsAchieved = float64(totalIterations) / analysisDuration.Seconds()
+		// rpsAchieved is HTTP calls/s = iterations × nSteps / analysisDuration.
+		iterationsPerSecond := float64(totalIterations) / analysisDuration.Seconds()
+		rpsAchieved = iterationsPerSecond * nSteps
 
 		// Patch the extra report fields via a closure over the named vars.
 		extraReportFields = func(r *cli_functions.FlowReport) {
@@ -591,7 +723,13 @@ func executeFlow(
 			r.AnalysisDurationS = analysisDuration.Seconds()
 			r.StableRPSTarget = targetRPS
 			r.StableRPSAchieved = rpsAchieved
+			r.IterationsPerSecond = iterationsPerSecond
 			r.StableRPSMaxReached = maxReached
+			r.ForcedPlateau = forcedPlateau
+			r.ForcedPlateauReason = forcedPlateauReason
+			r.ForcedPlateauRPS = forcedPlateauRPS
+			r.NegativeResets = negativeResets
+			r.RampUpWindows = rampWindows
 			r.AvgConcurrency = avgConc
 			r.MaxConcurrency = maxConc
 			r.ThinkTimeAppliedMs = ttMean
@@ -612,9 +750,13 @@ func executeFlow(
 	allLatsMu.Unlock()
 
 	successful := totalRequests - totalErrors
-	// In test mode compute a simple rpsAchieved; load mode overrides via extraReportFields.
+	// In test mode compute a simple rpsAchieved (HTTP calls/s); load mode overrides via extraReportFields.
 	if !opts.TestMode && totalIterations > 0 && rpsAchieved == 0 {
-		rpsAchieved = float64(totalIterations) / duration.Seconds()
+		nStepsFallback := float64(len(flow.Steps))
+		if nStepsFallback < 1 {
+			nStepsFallback = 1
+		}
+		rpsAchieved = float64(totalIterations) * nStepsFallback / duration.Seconds()
 	}
 
 	errMu.Lock()
