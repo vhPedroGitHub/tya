@@ -120,13 +120,35 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 	// alone flows with no rps and no duration configured → single-pass (1 iteration).
 	aloneNoConfig := strings.EqualFold(flow.Type, "alone") && flow.Duration == "" && rps <= 0
 
-	if flow.Type == "iterate" || aloneNoConfig {
-		// Iterate flows and lone one-shot flows use shared-iterations with 1 VU.
+	if aloneNoConfig {
+		// Lone one-shot flows: single sequential pass, no rate target.
 		b.WriteString("    scenario: {\n")
 		b.WriteString("      executor: 'shared-iterations',\n")
 		b.WriteString("      vus: 1,\n")
 		b.WriteString("      iterations: 1,\n")
 		fmt.Fprintf(&b, "      maxDuration: '%s',\n", duration)
+		b.WriteString("    },\n")
+		return b.String()
+	}
+
+	if flow.Type == "iterate" {
+		// Iterate flows: constant-arrival-rate executor.
+		// RPS = HTTP calls/s. Arrival rate for the executor = iterations/s = rps / nSteps.
+		nSteps := float64(len(flow.Steps))
+		if nSteps < 1 {
+			nSteps = 1
+		}
+		iterRPS := rps / nSteps
+		if iterRPS < 1 {
+			iterRPS = 1
+		}
+		b.WriteString("    scenario: {\n")
+		b.WriteString("      executor: 'constant-arrival-rate',\n")
+		fmt.Fprintf(&b, "      rate: %d,\n", int(iterRPS))
+		b.WriteString("      timeUnit: '1s',\n")
+		b.WriteString("      preAllocatedVUs: 10,\n")
+		b.WriteString("      maxVUs: 200,\n")
+		fmt.Fprintf(&b, "      duration: '%s',\n", duration)
 		b.WriteString("    },\n")
 		return b.String()
 	}
