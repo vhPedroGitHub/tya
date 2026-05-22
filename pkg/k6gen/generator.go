@@ -1,6 +1,7 @@
 package k6gen
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,41 +187,64 @@ func WriteScripts(scripts []FlowScript, outputDir string) error {
 	return nil
 }
 
-// WriteConfigJSON writes a metadata JSON file alongside the scripts.
+// configFlowEntry is the per-flow entry written to config.json.
+type configFlowEntry struct {
+	Name      string   `json:"name"`
+	Type      string   `json:"type"`
+	File      string   `json:"file"`
+	DependsOn []string `json:"depends_on"`
+	RPS       float64  `json:"rps"`
+	Duration  string   `json:"duration"`
+}
+
+// configAuthEntry is the per-auth-profile entry written to config.json.
+type configAuthEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// configJSON is the top-level structure written to config.json.
+type configJSON struct {
+	BaseURL      string            `json:"base_url"`
+	Flows        []configFlowEntry `json:"flows"`
+	AuthProfiles []configAuthEntry `json:"auth_profiles"`
+}
+
+// WriteConfigJSON writes a metadata JSON file alongside the scripts so that
+// tya runk6s can read flow ordering and dependency information.
 func WriteConfigJSON(cfg configyml.RunConfig, outputDir string) error {
-	var b strings.Builder
-	b.WriteString("{\n")
-	fmt.Fprintf(&b, "  \"base_url\": %q,\n", cfg.BaseURL)
-	b.WriteString("  \"flows\": [\n")
-	for i, f := range cfg.Flows {
-		b.WriteString("    {\n")
-		fmt.Fprintf(&b, "      \"name\": %q,\n", f.Name)
-		fmt.Fprintf(&b, "      \"type\": %q,\n", f.Type)
-		fmt.Fprintf(&b, "      \"file\": %q,\n", f.Name+".js")
-		fmt.Fprintf(&b, "      \"depends_on\": %v,\n", f.DependsOn)
-		fmt.Fprintf(&b, "      \"rps\": %.1f,\n", f.RequestsPerSecond)
-		fmt.Fprintf(&b, "      \"duration\": %q\n", f.Duration)
-		if i < len(cfg.Flows)-1 {
-			b.WriteString("    },\n")
-		} else {
-			b.WriteString("    }\n")
+	flows := make([]configFlowEntry, 0, len(cfg.Flows))
+	for _, f := range cfg.Flows {
+		deps := f.DependsOn
+		if deps == nil {
+			deps = []string{}
 		}
+		flows = append(flows, configFlowEntry{
+			Name:      f.Name,
+			Type:      f.Type,
+			File:      f.Name + ".js",
+			DependsOn: deps,
+			RPS:       f.RequestsPerSecond,
+			Duration:  f.Duration,
+		})
 	}
-	b.WriteString("  ],\n")
-	b.WriteString("  \"auth_profiles\": [\n")
-	for i, a := range cfg.AuthProfiles {
-		b.WriteString("    {\n")
-		fmt.Fprintf(&b, "      \"name\": %q,\n", a.Name)
-		fmt.Fprintf(&b, "      \"type\": %q\n", a.Type)
-		if i < len(cfg.AuthProfiles)-1 {
-			b.WriteString("    },\n")
-		} else {
-			b.WriteString("    }\n")
-		}
+
+	auths := make([]configAuthEntry, 0, len(cfg.AuthProfiles))
+	for _, a := range cfg.AuthProfiles {
+		auths = append(auths, configAuthEntry{Name: a.Name, Type: a.Type})
 	}
-	b.WriteString("  ]\n")
-	b.WriteString("}\n")
+
+	out := configJSON{
+		BaseURL:      cfg.BaseURL,
+		Flows:        flows,
+		AuthProfiles: auths,
+	}
+
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config.json: %w", err)
+	}
 
 	path := filepath.Join(outputDir, "config.json")
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return os.WriteFile(path, data, 0o644)
 }

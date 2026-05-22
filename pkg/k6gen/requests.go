@@ -44,9 +44,12 @@ func GenerateStepCode(step configyml.Step, flowName string, auth configyml.AuthP
 	// Execute request
 	b.WriteString("      const startTime = Date.now();\n")
 	k6Method := k6HTTPMethod(method)
-	if method == "GET" || method == "DELETE" {
+	switch method {
+	case "GET":
 		fmt.Fprintf(&b, "      const res = http.%s(url, { headers: headers });\n", k6Method)
-	} else {
+	case "DELETE":
+		fmt.Fprintf(&b, "      const res = http.%s(url, null, { headers: headers });\n", k6Method)
+	default:
 		fmt.Fprintf(&b, "      const res = http.%s(url, body, { headers: headers });\n", k6Method)
 	}
 	b.WriteString("      const latency = Date.now() - startTime;\n")
