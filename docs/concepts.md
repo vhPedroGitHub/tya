@@ -30,6 +30,7 @@ A **flow** is a named sequence of HTTP requests executed against your API. Flows
 |------|-------------|
 | `end-to-end` | Multi-step flow executed sequentially. Supports data extraction between steps. |
 | `alone` | Single endpoint + method, no chaining. |
+| `iterate` | Processes every item in a global-bucket list sequentially. Steps run once per item at the configured RPS. |
 
 ### Flow Fields
 
@@ -73,6 +74,66 @@ flows:
 ### Wire-Flow Children
 
 `children` are flows that run **after** the parent flow's goroutine pool has fully drained. They are useful for teardown or cleanup that must happen once load has stopped but before the overall run ends. Children run sequentially after the parent and share the final flow context of the last completed goroutine.
+
+### Iterate Flows
+
+An **iterate flow** (`type: iterate`) processes every item in a global-bucket list sequentially. It reads the list once, then executes all steps for each item at the pace controlled by `requests_per_second`.
+
+```yaml
+flows:
+  - name: seed-users
+    type: end-to-end
+    duration: 10s
+    requests_per_second: 5
+    auth: app-user
+    steps:
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template-json
+        payload_overrides:
+          email: "user-{{ uuid }}@example.com"
+        extract:
+          - field: response.body.id
+            as: created_id
+            global_list: true   # append to GlobalBucket["seed-users"]["created_id"]
+
+  - name: update-each-user
+    type: iterate
+    iterate_list: seed-users.created_id   # source: "flow-name.key"
+    item_variable: item                   # template key (default: "item")
+    duration: 60s
+    requests_per_second: 5                # 5 items/sec × 2 steps = 10 HTTP calls/sec
+    auth: app-user
+    depends_on:
+      - seed-users
+    steps:
+      - id: patch-phone
+        endpoint: /persons/{{ .item }}
+        method: PATCH
+        payload_strategy: template
+        payload_template: |
+          { "phone": "+1-{{ randomDigits 4 }}" }
+```
+
+**How it works:**
+1. The flow reads the list from `GlobalBucket["seed-users"]["created_id"]`.
+2. For each item in the list, it executes all steps sequentially.
+3. The current item is available in templates as `{{ .item }}` (configurable via `item_variable`).
+4. Items are processed at a rate of `1 / requests_per_second` seconds per item.
+5. `duration` is a safety cap; the flow ends when all items are processed or duration expires.
+
+**Iterate flow fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `iterate_list` | Yes | Source list in `"flow-name.key"` format |
+| `item_variable` | No | Template key for the current item (default: `"item"`) |
+| `requests_per_second` | Yes | Items processed per second |
+| `duration` | Yes | Safety cap |
+| `auth` | No | Auth profile |
+| `depends_on` | No | Dependencies |
+| `steps` | Yes | Steps to execute per item |
 
 ---
 
@@ -150,6 +211,7 @@ All template strings — `payload_template`, `payload_overrides` values, and end
 | `timestampMs` | `timestampMs` | Current Unix timestamp in milliseconds |
 | `upper` | `upper "hello"` | Converts a string to upper-case |
 | `lower` | `lower "HELLO"` | Converts a string to lower-case |
+| `globalGet` | `globalGet "flow" "key"` | Reads a value from the global bucket snapshot (see Global Bucket) |
 
 **Examples:**
 
@@ -185,6 +247,64 @@ Extracted values are then referenced in subsequent steps via `{{ .key }}` in tem
 - endpoint: /persons/{{ .create-person.response.body.id }}
   method: GET
 ```
+
+---
+
+## Global Bucket
+
+The **global bucket** is a thread-safe, cross-flow key-value store that persists extracted values across flows within a single run. Values are namespaced by the flow that wrote them, so keys from different flows never collide.
+
+### Writing to the Global Bucket
+
+Set `global: true` on any extractor to persist the extracted value into the global bucket under the flow's namespace:
+
+```yaml
+flows:
+  - name: seed-directory
+    steps:
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template-json
+        payload_overrides:
+          email: "seed-{{ uuid }}@tya.dev"
+        extract:
+          - field: response.body.id
+            as: created_id
+            global: true   # writes to GlobalBucket["seed-directory"]["created_id"]
+```
+
+### Reading from the Global Bucket
+
+Use `{{ globalGet "flow-name" "key" }}` in templates:
+
+```yaml
+  - name: audit-and-cleanup
+    depends_on: [seed-directory]
+    steps:
+      - id: verify-seeded-person
+        endpoint: /persons/{{ globalGet "seed-directory" "created_id" }}
+        method: GET
+```
+
+Alternatively, use `{{ index .global "flow-name" "key" }}`:
+
+```yaml
+        endpoint: /persons/{{ index .global "seed-directory" "created_id" }}
+```
+
+### Synchronization
+
+- **Write**: thread-safe via mutex, last-write-wins semantics.
+- **Read**: at the start of each goroutine iteration the full bucket snapshot is injected into `fCtx["global"]` as `map[string]map[string]any`.
+- **Ordering**: `depends_on` guarantees the producing flow has completed before the consuming flow starts, so the global bucket is never empty when read.
+
+### Rules
+
+- Each flow writes into its own namespace only (the flow name).
+- The bucket is created once per run and shared across all flows.
+- Wire-flow children inherit the same global bucket snapshot as their parent.
+- Values are **not** persisted to disk — the bucket exists only for the duration of the run.
 
 ---
 
@@ -368,4 +488,5 @@ flows:
         extract:
           - field: response.body.some.path
             as: my_key
+            global: true          # optional; also writes to the global bucket
 ```

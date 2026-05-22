@@ -195,7 +195,7 @@ func (r RampUp) Resolve() RampUp {
 // Flow describes a named test/load flow.
 type Flow struct {
 	Name              string     `yaml:"name"`
-	Type              string     `yaml:"type"` // end-to-end | alone
+	Type              string     `yaml:"type"` // end-to-end | alone | iterate
 	Duration          string     `yaml:"duration,omitempty"`
 	RequestsPerSecond float64    `yaml:"requests_per_second,omitempty"`
 	Auth              string     `yaml:"auth,omitempty"`
@@ -208,6 +208,13 @@ type Flow struct {
 	// Children holds wire-flows that run exactly once after the parent
 	// completes, inheriting the parent's last execution context.
 	Children  []WireFlow `yaml:"children,omitempty"`
+
+	// IterateList is the source for type: iterate flows.
+	// Format: "flow-name.key" — references a list stored in the global bucket.
+	IterateList string `yaml:"iterate_list,omitempty"`
+	// ItemVariable is the template key under which each list item is made
+	// available inside the flow context during iteration (default: "item").
+	ItemVariable string `yaml:"item_variable,omitempty"`
 }
 
 // WireFlow is a one-shot flow that runs after its parent flow completes.
@@ -244,6 +251,14 @@ type Step struct {
 type Extractor struct {
 	Field string `yaml:"field"`
 	As    string `yaml:"as"`
+	// Global, when true, also writes the extracted value into the GlobalBucket
+	// under the flow's own namespace, making it available to other flows via
+	// {{ index .global "flow-name" "key" }} or {{ globalGet "flow-name" "key" }}.
+	Global bool `yaml:"global,omitempty"`
+	// GlobalList, when true, appends the extracted value to a list in the
+	// GlobalBucket under the flow's own namespace. Lists are read by iterate
+	// flows via {{ globalGetList "flow-name" "key" }}.
+	GlobalList bool `yaml:"global_list,omitempty"`
 }
 
 // DefaultRunConfig returns a minimal RunConfig skeleton.
