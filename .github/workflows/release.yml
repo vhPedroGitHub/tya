@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set names
+        id: names
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          BIN="tya${EXT}"
+          DIR="tya-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ARCHIVE="${DIR}.zip"
+          else
+            ARCHIVE="${DIR}.tar.gz"
+          fi
+          echo "bin=${BIN}" >> "$GITHUB_OUTPUT"
+          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p "${{ steps.names.outputs.dir }}"
+          go build \
+            -ldflags="-s -w -X main.version=${{ steps.names.outputs.version }}" \
+            -o "${{ steps.names.outputs.dir }}/${{ steps.names.outputs.bin }}" \
+            ./cmd/tya/cli
+          cp README.md "${{ steps.names.outputs.dir }}/"
+          cp docs/getting-started.md "${{ steps.names.outputs.dir }}/"
+
+      - name: Create archive
+        run: |
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -r "${{ steps.names.outputs.archive }}" "${{ steps.names.outputs.dir }}"
+          else
+            tar -czf "${{ steps.names.outputs.archive }}" "${{ steps.names.outputs.dir }}"
+          fi
+
+      - name: Upload binary asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.names.outputs.archive }}
+
+  package-scripts:
+    name: Package Python scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: ver
+        run: echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build packages
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DIR="tya-scripts-${VERSION}"
+          mkdir -p "${DIR}"
+          cp scripts/tya-report-pdf.py "${DIR}/"
+          cp scripts/requirements.txt "${DIR}/"
+          cp README.md "${DIR}/"
+
+          # tar.gz
+          tar -czf "${DIR}.tar.gz" "${DIR}"
+
+          # zip
+          zip -r "${DIR}.zip" "${DIR}"
+
+      - name: Upload script assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            tya-scripts-${{ steps.ver.outputs.version }}.tar.gz
+            tya-scripts-${{ steps.ver.outputs.version }}.zip
