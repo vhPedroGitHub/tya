@@ -193,9 +193,23 @@ The `run` command uses a **four-phase adaptive load engine** per flow:
 Instead of slamming the target RPS from the first tick, TYA grows load incrementally:
 
 1. Starts at `initial_rps` (default: 1).
-2. Each **step window** (`step_window`, default: 2 s), it measures the observed RPS.
+2. Each **step window** (`step_window`, default: 2 s), it measures the observed HTTP calls/s.
 3. Multiplies the ticker rate by `factor` (default: 1.5) until target RPS is reached.
 4. Declares plateau when `stability_windows` (default: 3) consecutive windows are all within `stability_threshold` (default: 5 %) of each other.
+
+#### Negative Resets
+
+A **negative reset** is any window where the observed RPS drops below the previous window's RPS (regardless of the stability threshold). This signals the system is struggling, not just oscillating.
+
+TYA tracks the **total** number of negative resets (not consecutive). When this count reaches `max_negative_resets` (default: 3), a **forced plateau** is triggered immediately:
+
+- The analysis RPS is set to the average of the best `best_windows_avg` (default: 3) stable windows recorded so far — the ones closest to the target RPS.
+- The report flags `forced_plateau: true`, `forced_plateau_reason: "negative_resets"`, and records the computed `forced_plateau_rps`.
+- All per-window diagnostics (observed RPS, variation, negative-reset flag, consecutive count) are recorded in `ramp_up_windows` in the report.
+
+#### Ramp-up Timeout
+
+If `max_ramp_duration` (default: 600 s) elapses before a natural or negative-reset plateau is reached, TYA forces the plateau with the same best-windows average and sets `forced_plateau_reason: "timeout"`.
 
 If the target RPS is never reachable (system saturated), TYA logs a warning and runs the analysis at the highest achievable rate (`stable_rps_max_reached: true` in the report).
 
@@ -232,11 +246,14 @@ flows:
     duration: 60s
     requests_per_second: 100
     ramp_up:
-      initial_rps: 2          # Start here (default: 1)
-      factor: 2.0             # Growth multiplier per step (default: 1.5)
-      step_window: 3s         # Measurement window per ramp step (default: 2s)
-      stability_windows: 4    # Consecutive stable windows needed (default: 3)
+      initial_rps: 2             # Start here (default: 1)
+      factor: 2.0                # Growth multiplier per step (default: 1.5)
+      step_window: 3s            # Measurement window per ramp step (default: 2s)
+      stability_windows: 4       # Consecutive stable windows needed (default: 3)
       stability_threshold: 0.03  # Max relative variation for "stable" (default: 0.05)
+      max_ramp_duration: 120s    # Hard timeout for ramp-up phase (default: 600s)
+      max_negative_resets: 3     # Total negative resets before forced plateau (default: 3)
+      best_windows_avg: 3        # Top-N stable windows averaged for forced plateau RPS (default: 3)
     steps:
       - ...
 ```

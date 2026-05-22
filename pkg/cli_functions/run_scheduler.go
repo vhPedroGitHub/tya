@@ -63,6 +63,23 @@ type FlowReport struct {
 	// StableRPSMaxReached is true when the system could not reach
 	// StableRPSTarget and ran the analysis at the highest achievable rate.
 	StableRPSMaxReached bool `json:"stable_rps_max_reached,omitempty"`
+	// ForcedPlateau is true when the ramp-up was terminated early (either by
+	// max_negative_resets or max_ramp_duration) and the analysis RPS was
+	// derived from the best stable windows observed rather than a natural
+	// plateau.
+	ForcedPlateau bool `json:"forced_plateau,omitempty"`
+	// ForcedPlateauReason describes why the plateau was forced:
+	// "negative_resets" or "timeout".
+	ForcedPlateauReason string `json:"forced_plateau_reason,omitempty"`
+	// ForcedPlateauRPS is the averaged RPS used for the analysis window when
+	// a forced plateau occurs.
+	ForcedPlateauRPS float64 `json:"forced_plateau_rps,omitempty"`
+	// NegativeResets is the total count of negative-reset windows observed
+	// during the entire ramp-up phase. When this reaches max_negative_resets
+	// a forced plateau is triggered (resets do not need to be consecutive).
+	NegativeResets int `json:"negative_resets,omitempty"`
+	// RampUpWindows holds per-window diagnostics recorded during ramp-up.
+	RampUpWindows []RampUpWindow `json:"ramp_up_windows,omitempty"`
 	// AvgConcurrency is the time-averaged number of goroutines running
 	// concurrently during the analysis window.
 	AvgConcurrency float64 `json:"avg_concurrency"`
@@ -91,6 +108,26 @@ type StepReport struct {
 	Requests   int64        `json:"requests"`
 	Errors     int64        `json:"errors"`
 	LatencyMS  LatencyStats `json:"latency_ms"`
+}
+
+// RampUpWindow records the observed metrics for a single ramp-up step window.
+type RampUpWindow struct {
+	// WindowIndex is the 1-based sequence number of this window.
+	WindowIndex int `json:"window_index"`
+	// TargetRPS is the HTTP calls/s the engine was aiming for in this window.
+	TargetRPS float64 `json:"target_rps"`
+	// ObservedRPS is the measured HTTP calls/s during this window.
+	ObservedRPS float64 `json:"observed_rps"`
+	// Variation is the relative change vs the previous window (0 on first window).
+	Variation float64 `json:"variation"`
+	// Stable is true when variation <= stability_threshold.
+	Stable bool `json:"stable"`
+	// NegativeReset is true when this window's RPS dropped below the previous
+	// window's RPS (a downward instability event).
+	NegativeReset bool `json:"negative_reset,omitempty"`
+	// ConsecutiveNegativeResets is the running count of consecutive negative
+	// resets at the end of this window.
+	ConsecutiveNegativeResets int `json:"consecutive_negative_resets,omitempty"`
 }
 
 // RunScheduler executes a list of flows in dependency order. It starts each

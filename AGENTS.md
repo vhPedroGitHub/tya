@@ -407,11 +407,27 @@ The `run` command uses a goroutine-based load engine to reach the target `reques
 - Each goroutine executes all N steps sequentially (one full flow iteration). After finishing it sleeps a **think-time** remainder so its total slot time equals `N / rps` seconds, self-regulating pace.
 - The engine runs in **4 phases**: ramp-up (multiplicative, `factor=1.5` default) → plateau detection (N stable windows) → analysis window (`duration` config applies here) → drain.
 - A semaphore caps concurrent goroutines to `ceil((rps/N) × p95_iter_s × 1.5)`, min 8.
-- The JSON report fields:
-  - `rps_achieved` — measured **HTTP calls/s** during the analysis window (`totalIterations × N / analysisDuration`)
-  - `iterations_per_second` — measured **flow iterations/s** (`rps_achieved / N`); useful for understanding goroutine throughput
-  - `stable_rps_target` / `stable_rps_achieved` — same as above but scoped to the adaptive engine section
-- At the end of the run, a **JSON report** is written with: p50/p95/p99 latency, total requests, error rate, per-step breakdown, and per-flow summary.
+
+### Negative Resets and Forced Plateau
+
+A **negative reset** is any ramp-up window where the observed RPS drops below the previous window's RPS. Resets do **not** need to be consecutive — TYA counts the total. When `max_negative_resets` (default: 3) is reached, TYA forces a plateau immediately:
+
+- Analysis RPS = average of the best `best_windows_avg` (default: 3) stable windows (closest to target).
+- Report flags: `forced_plateau: true`, `forced_plateau_reason: "negative_resets"`, `forced_plateau_rps`.
+- `ramp_up_windows[]` in the report contains per-window diagnostics with `negative_reset` and `consecutive_negative_resets` flags.
+
+A **timeout** (`max_ramp_duration`, default: 600 s) fires the same forced-plateau logic with `forced_plateau_reason: "timeout"` if no plateau is reached in time.
+
+### JSON Report Fields
+
+- `rps_achieved` — measured **HTTP calls/s** during the analysis window (`totalIterations × N / analysisDuration`)
+- `iterations_per_second` — measured **flow iterations/s** (`rps_achieved / N`); useful for goroutine throughput
+- `stable_rps_target` / `stable_rps_achieved` — same as above, scoped to the adaptive engine section
+- `forced_plateau` / `forced_plateau_reason` / `forced_plateau_rps` — forced-plateau diagnostics
+- `negative_resets` — total negative-reset windows observed during ramp-up
+- `ramp_up_windows[]` — per-window detail: `target_rps`, `observed_rps`, `variation`, `stable`, `negative_reset`, `consecutive_negative_resets`
+
+At the end of the run, a **JSON report** is written with: p50/p95/p99 latency, total requests, error rate, per-step breakdown, and per-flow summary.
 
 ---
 
