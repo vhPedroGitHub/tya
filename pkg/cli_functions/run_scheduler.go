@@ -89,6 +89,21 @@ type FlowReport struct {
 	// ThinkTimeAppliedMs is the mean think-time sleep (ms) applied at the
 	// end of each goroutine iteration to regulate the flow rhythm.
 	ThinkTimeAppliedMs float64 `json:"think_time_applied_ms,omitempty"`
+	// Timeline holds per-second request and error counts sampled during the
+	// analysis window. Each point covers exactly one second of wall time.
+	Timeline []TimelinePoint `json:"timeline,omitempty"`
+}
+
+// TimelinePoint captures the number of HTTP requests and errors observed in
+// a single one-second bucket during the analysis window.
+type TimelinePoint struct {
+	// SecondOffset is the elapsed second (0-based) from the start of the
+	// analysis window.
+	SecondOffset int `json:"second_offset"`
+	// Requests is the number of HTTP calls completed in this second.
+	Requests int64 `json:"requests"`
+	// Errors is the number of failed HTTP calls in this second.
+	Errors int64 `json:"errors"`
 }
 
 // LatencyStats holds the full suite of latency percentiles (in milliseconds).

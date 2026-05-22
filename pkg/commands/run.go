@@ -144,6 +144,35 @@ func runFlows(log *zap.Logger, opts *models.RunOptions) error {
 		log.Info("report written", zap.String("path", reportPath))
 	}
 
+	// Write a separate timeline file containing per-flow, per-second request counts.
+	type flowTimeline struct {
+		Name     string                          `json:"name"`
+		Timeline []cli_functions.TimelinePoint   `json:"timeline"`
+	}
+	type timelineReport struct {
+		RunID     string         `json:"run_id"`
+		StartedAt time.Time      `json:"started_at"`
+		Flows     []flowTimeline `json:"flows"`
+	}
+	tl := timelineReport{
+		RunID:     report.RunID,
+		StartedAt: report.StartedAt,
+	}
+	for name, fr := range results {
+		if len(fr.Timeline) > 0 {
+			tl.Flows = append(tl.Flows, flowTimeline{Name: name, Timeline: fr.Timeline})
+		}
+	}
+	if len(tl.Flows) > 0 {
+		tlPath := fmt.Sprintf("tya-timeline-%s.json", startedAt.Format("20060102-150405"))
+		tlData, _ := json.MarshalIndent(tl, "", "  ")
+		if err := os.WriteFile(tlPath, tlData, 0o644); err != nil {
+			log.Warn("could not write timeline", zap.Error(err))
+		} else {
+			log.Info("timeline written", zap.String("path", tlPath))
+		}
+	}
+
 	return nil
 }
 
@@ -663,18 +692,53 @@ func executeFlow(
 		analysisTicker := time.NewTicker(tickInterval(currentRPS))
 		defer analysisTicker.Stop()
 
+		// Timeline: one-second sampling goroutine.
+		// Snapshots totalRequests and totalErrors each second and records deltas.
+		var timelinePoints []cli_functions.TimelinePoint
+		var timelineMu sync.Mutex
+		timelineDone := make(chan struct{})
+		go func() {
+			defer close(timelineDone)
+			secTicker := time.NewTicker(time.Second)
+			defer secTicker.Stop()
+			prevReq := atomic.LoadInt64(&totalRequests)
+			prevErr := atomic.LoadInt64(&totalErrors)
+			sec := 0
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case <-secTicker.C:
+					curReq := atomic.LoadInt64(&totalRequests)
+					curErr := atomic.LoadInt64(&totalErrors)
+					pt := cli_functions.TimelinePoint{
+						SecondOffset: sec,
+						Requests:     curReq - prevReq,
+						Errors:       curErr - prevErr,
+					}
+					timelineMu.Lock()
+					timelinePoints = append(timelinePoints, pt)
+					timelineMu.Unlock()
+					prevReq = curReq
+					prevErr = curErr
+					sec++
+				}
+			}
+		}()
+
 	analysisLoop:
 		for {
 			select {
 			case <-runCtx.Done():
 				break analysisLoop
 			case <-analysisTicker.C:
-			atomic.AddInt64(&totalIterations, 1)
-			spawnIteration(currentRPS)
+				atomic.AddInt64(&totalIterations, 1)
+				spawnIteration(currentRPS)
 			}
 		}
 
 		// ── Phase 4: Drain ───────────────────────────────────────────────────
+		<-timelineDone
 		rampWg.Wait()
 
 		analysisDuration := time.Since(analysisStart)
@@ -733,6 +797,10 @@ func executeFlow(
 			r.AvgConcurrency = avgConc
 			r.MaxConcurrency = maxConc
 			r.ThinkTimeAppliedMs = ttMean
+			timelineMu.Lock()
+			r.Timeline = make([]cli_functions.TimelinePoint, len(timelinePoints))
+			copy(r.Timeline, timelinePoints)
+			timelineMu.Unlock()
 		}
 	}
 
