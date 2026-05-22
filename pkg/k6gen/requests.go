@@ -2,6 +2,7 @@ package k6gen
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"tya/pkg/configyml"
@@ -89,21 +90,32 @@ func goTemplateToJSEval(s string) string {
 }
 
 // GenerateIterateStepCode generates the k6 code for an iterate flow.
-// Instead of running steps in a VU loop, it iterates over a list.
+// Each VU iteration processes exactly 1 item from the list, using __ITER
+// (the global iteration counter across all VUs) as the index. This matches
+// the Go engine semantics where each goroutine handles one item and the
+// arrival-rate ticker controls how many items are launched per second.
+//
+// When __ITER exceeds the list length, the iteration returns early (Option A:
+// stop when the list is exhausted, no looping).
 func GenerateIterateStepCode(steps []configyml.Step, flowName, itemVar, listSource string, auth configyml.AuthProfile) string {
 	var b strings.Builder
 
-	// The list is passed via setup data or read from a global context
+	// The list is passed via setup data (from previous flow's global state).
 	fmt.Fprintf(&b, "    const items = data['%s'] || [];\n", listSource)
-	b.WriteString("    for (let __idx = 0; __idx < items.length; __idx++) {\n")
-	fmt.Fprintf(&b, "      ctx['%s'] = items[__idx];\n", itemVar)
-	b.WriteString("      ctx['__item_index__'] = __idx;\n")
+	b.WriteString("    if (items.length === 0) { return; }\n")
+	b.WriteString("\n")
+
+	// Each iteration processes 1 item. __ITER is the global iteration counter
+	// across all VUs. When it exceeds the list length, skip.
+	b.WriteString("    if (__ITER >= items.length) { return; }\n")
+	fmt.Fprintf(&b, "    ctx['%s'] = items[__ITER];\n", itemVar)
+	b.WriteString("    ctx['__item_index__'] = __ITER;\n")
+	b.WriteString("\n")
 
 	for _, step := range steps {
 		b.WriteString(GenerateStepCode(step, flowName, auth))
 	}
 
-	b.WriteString("    }\n")
 	return b.String()
 }
 
@@ -133,12 +145,12 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 
 	if flow.Type == "iterate" {
 		// Iterate flows: constant-arrival-rate executor.
-		// RPS = HTTP calls/s. Arrival rate for the executor = iterations/s = rps / nSteps.
+		// RPS = HTTP calls/s. Arrival rate for the executor = iterations/s = ceil(rps / nSteps).
 		nSteps := float64(len(flow.Steps))
 		if nSteps < 1 {
 			nSteps = 1
 		}
-		iterRPS := rps / nSteps
+		iterRPS := math.Ceil(rps / nSteps)
 		if iterRPS < 1 {
 			iterRPS = 1
 		}
