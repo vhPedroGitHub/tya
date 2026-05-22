@@ -936,10 +936,12 @@ func boolToInt64(b bool) int64 {
 // ---------------------------------------------------------------------------
 
 // executeIterateFlow runs a flow of type "iterate". It reads a list from the
-// global bucket, then processes every item sequentially, executing all steps
-// for each item. The RPS controls the pace: each item is started at a rate of
-// 1/RPS seconds (so HTTP-call rate = RPS × N_steps).
+// global bucket and processes every item using a goroutine pool, mirroring the
+// end-to-end execution engine. RPS means HTTP calls/s (same as end-to-end):
+// the arrival-rate ticker fires at rps/nSteps iterations/s so that total HTTP
+// calls equal rps calls/s. Think-time inside each goroutine self-regulates pace.
 //
+// The pool stops as soon as all items have been dispatched (option A — no looping).
 // The current item is injected into the flow context under the key specified
 // by flow.ItemVariable (default "item"), making it accessible in templates as
 // {{ .item }} or {{ index .item "field" }}.
@@ -976,6 +978,11 @@ func executeIterateFlow(
 	rps := flow.RequestsPerSecond
 	testMode := opts.TestMode || rps <= 0
 
+	nSteps := float64(len(flow.Steps))
+	if nSteps < 1 {
+		nSteps = 1
+	}
+
 	// Per-step metric accumulators.
 	stepBuckets := make(map[string]*stepMetricsBucket, len(flow.Steps))
 	for _, s := range flow.Steps {
@@ -1009,55 +1016,130 @@ func executeIterateFlow(
 		}
 	}
 
-	// Compute interval between items.
-	var interval time.Duration
-	if testMode {
-		interval = 0
-	} else {
-		interval = time.Duration(float64(time.Second) / rps)
-	}
-
 	log.Info("iterate: starting",
 		zap.String("iterate_list", flow.IterateList),
 		zap.Int("items", len(items)),
 		zap.Float64("rps", rps),
-		zap.Duration("interval", interval),
+		zap.Bool("test_mode", testMode),
 	)
 
 	iterStart := time.Now()
 
-	for i, item := range items {
-		if interval > 0 && i > 0 {
-			time.Sleep(interval)
-		}
-
-		fCtx := cli_functions.FlowContext{
-			"_base_url":   baseURL,
-			itemVar:       item,
-			"global":      bucket.Snapshot(),
-			"global_lists": bucket.SnapshotLists(),
-		}
-		if flow.Auth != "" {
-			if auth, ok := authMap[flow.Auth]; ok {
-				acquireToken(log, auth, baseURL, fCtx)
+	if testMode {
+		// Test mode: process all items sequentially, no pacing.
+		for i, item := range items {
+			fCtx := cli_functions.FlowContext{
+				"_base_url":    baseURL,
+				itemVar:        item,
+				"global":       bucket.Snapshot(),
+				"global_lists": bucket.SnapshotLists(),
+			}
+			if flow.Auth != "" {
+				if auth, ok := authMap[flow.Auth]; ok {
+					acquireToken(log, auth, baseURL, fCtx)
+				}
+			}
+			for _, step := range flow.Steps {
+				id := stepID(step)
+				res := executeStep(log, step, fCtx, authMap[flow.Auth])
+				recordResult(id, res)
+				if res.Err != nil || res.StatusCode >= 400 {
+					log.Debug("iterate: step failed",
+						zap.Int("item_index", i),
+						zap.String("step", id),
+						zap.Int("status", res.StatusCode),
+						zap.Error(res.Err),
+					)
+				} else {
+					applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
+				}
 			}
 		}
+	} else {
+		// Load mode: goroutine pool with arrival-rate ticker, mirroring executeFlow.
+		//
+		// RPS = HTTP calls/s. Ticker interval = nSteps / rps so that firing one
+		// goroutine per tick produces exactly rps HTTP calls/s.
+		tickInterval := time.Duration(float64(time.Second) * nSteps / rps)
 
-		for _, step := range flow.Steps {
-			id := stepID(step)
-			res := executeStep(log, step, fCtx, authMap[flow.Auth])
-			recordResult(id, res)
-			if res.Err != nil || res.StatusCode >= 400 {
-				log.Debug("iterate: step failed",
-					zap.Int("item_index", i),
-					zap.String("step", id),
-					zap.Int("status", res.StatusCode),
-					zap.Error(res.Err),
-				)
-			} else {
-				applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
-			}
+		// Semaphore: cap concurrent goroutines.
+		semCap := int(rps/nSteps*10) + 1
+		if semCap < 8 {
+			semCap = 8
 		}
+		sem := make(chan struct{}, semCap)
+
+		var iterWg sync.WaitGroup
+
+		// itemCh feeds items to goroutines; closed when all items are dispatched.
+		itemCh := make(chan any, len(items))
+		for _, it := range items {
+			itemCh <- it
+		}
+		close(itemCh)
+
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			item, more := <-itemCh
+			if !more {
+				// All items dispatched — stop spawning.
+				break
+			}
+
+			select {
+			case sem <- struct{}{}:
+			default:
+				// Semaphore full — put item back is not possible on closed channel,
+				// so we process it inline (blocking) to avoid losing it.
+				sem <- struct{}{}
+			}
+
+			capturedItem := item
+			capturedRPS := rps
+			iterWg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					iterWg.Done()
+				}()
+				fCtx := cli_functions.FlowContext{
+					"_base_url":    baseURL,
+					itemVar:        capturedItem,
+					"global":       bucket.Snapshot(),
+					"global_lists": bucket.SnapshotLists(),
+				}
+				if flow.Auth != "" {
+					if auth, ok := authMap[flow.Auth]; ok {
+						acquireToken(log, auth, baseURL, fCtx)
+					}
+				}
+				gStart := time.Now()
+				for _, step := range flow.Steps {
+					id := stepID(step)
+					res := executeStep(log, step, fCtx, authMap[flow.Auth])
+					recordResult(id, res)
+					if res.Err != nil || res.StatusCode >= 400 {
+						log.Debug("iterate: step failed",
+							zap.String("step", id),
+							zap.Int("status", res.StatusCode),
+							zap.Error(res.Err),
+						)
+					} else {
+						applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
+					}
+				}
+				// Think-time: sleep remainder of target iteration slot.
+				targetIterDur := time.Duration(float64(time.Second) * nSteps / capturedRPS)
+				if thinkTime := targetIterDur - time.Since(gStart); thinkTime > 0 {
+					time.Sleep(thinkTime)
+				}
+			}()
+		}
+
+		// Wait for all in-flight goroutines to finish.
+		iterWg.Wait()
 	}
 
 	iterDuration := time.Since(iterStart)
