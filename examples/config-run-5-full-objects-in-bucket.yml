@@ -1,0 +1,83 @@
+################################################################################
+# config-run-5-full-objects-in-bucket.yml
+#
+# Demonstrates:
+#   - Saving full person objects (not just IDs) into the GlobalBucket list
+#   - iterate flow that accesses nested fields of each object via
+#     {{ index .person "field" }} syntax in endpoint and payload templates
+#   - Two-phase: create persons → update each one using data from their own object
+#
+# This tests that arbitrary map[string]any objects survive the bucket round-trip.
+################################################################################
+
+base_url: http://localhost:8080
+
+auth_profiles:
+  - name: app-user
+    type: custom_login
+    login_endpoint: /auth/login
+    method: POST
+    payload: |
+      { "email": "${TEST_USER}", "password": "${TEST_PASS}" }
+    extract_token:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+    refresh_endpoint: /auth/refresh
+    refresh_method: POST
+    refresh_payload: |
+      { "refresh_token": "{{ .refresh_token }}" }
+    refresh_extract:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+
+flows:
+  # ── 1. Create 10 persons, store the full response object per person ────────
+  - name: create-persons
+    type: end-to-end
+    duration: 5s
+    requests_per_second: 2
+    auth: app-user
+    steps:
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template
+        payload_template: |
+          {
+            "first_name": "Object",
+            "last_name":  "Bucket",
+            "email":      "obj-{{ randomUUID }}@bucket.dev",
+            "phone":      "+1-555-{{ randomDigits 4 }}",
+            "birth_date": "1990-01-01"
+          }
+        extract:
+          # Store the entire person object returned by the API
+          - field: response.body
+            as: person
+            global_list: true   # each full person object appended to the list
+
+  # ── 2. Iterate over the full objects and PATCH the birth_date of each ──────
+  - name: update-birth-dates
+    type: iterate
+    auth: app-user
+    depends_on:
+      - create-persons
+    iterate_list: create-persons.person
+    item_variable: person
+    steps:
+      - id: patch-birth-date
+        endpoint: /persons/{{ index .person "id" }}
+        method: PATCH
+        payload_strategy: template
+        payload_template: |
+          { "birth_date": "2000-06-15" }
+
+      - id: verify-update
+        endpoint: /persons/{{ index .person "id" }}
+        method: GET
+
+      - id: delete-person
+        endpoint: /persons/{{ index .person "id" }}
+        method: DELETE

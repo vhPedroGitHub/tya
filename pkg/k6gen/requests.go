@@ -41,15 +41,18 @@ func GenerateStepCode(step configyml.Step, flowName string, auth configyml.AuthP
 		fmt.Fprintf(&b, "      const body = %s;\n", payload)
 	}
 
-	// Execute request
+	// Execute request — also capture reqBody string for request-source extractors.
 	b.WriteString("      const startTime = Date.now();\n")
 	k6Method := k6HTTPMethod(method)
 	switch method {
 	case "GET":
 		fmt.Fprintf(&b, "      const res = http.%s(url, { headers: headers });\n", k6Method)
+		b.WriteString("      const reqBody = null;\n")
 	case "DELETE":
 		fmt.Fprintf(&b, "      const res = http.%s(url, null, { headers: headers });\n", k6Method)
+		b.WriteString("      const reqBody = null;\n")
 	default:
+		b.WriteString("      const reqBody = body;\n")
 		fmt.Fprintf(&b, "      const res = http.%s(url, body, { headers: headers });\n", k6Method)
 	}
 	b.WriteString("      const latency = Date.now() - startTime;\n")
@@ -113,17 +116,12 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 		duration = "30s"
 	}
 	rps := flow.RequestsPerSecond
-	if rps <= 0 {
-		rps = 1
-	}
 
-	rampUp := flow.RampUp
-	if rampUp != nil {
-		rampUp = rampCfg(rampUp)
-	}
+	// alone flows with no rps and no duration configured → single-pass (1 iteration).
+	aloneNoConfig := strings.EqualFold(flow.Type, "alone") && flow.Duration == "" && rps <= 0
 
-	if flow.Type == "iterate" {
-		// Iterate flows use shared-iterations
+	if flow.Type == "iterate" || aloneNoConfig {
+		// Iterate flows and lone one-shot flows use shared-iterations with 1 VU.
 		b.WriteString("    scenario: {\n")
 		b.WriteString("      executor: 'shared-iterations',\n")
 		b.WriteString("      vus: 1,\n")
@@ -133,7 +131,15 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 		return b.String()
 	}
 
-	// For end-to-end and alone flows, use ramping-arrival-rate
+	if rps <= 0 {
+		rps = 1
+	}
+
+	rampUp := flow.RampUp
+	if rampUp != nil {
+		rampUp = rampCfg(rampUp)
+	}
+
 	b.WriteString("    scenario: {\n")
 	b.WriteString("      executor: 'ramping-arrival-rate',\n")
 	fmt.Fprintf(&b, "      startRate: %d,\n", int(rps))

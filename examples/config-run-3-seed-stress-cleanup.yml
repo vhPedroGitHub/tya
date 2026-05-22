@@ -1,0 +1,82 @@
+################################################################################
+# config-run-3-seed-stress-cleanup.yml
+#
+# Demonstrates:
+#   - Seed flow: creates N persons and stores their IDs in a GlobalBucket list
+#   - Stress flow: depends_on seed, hammers GET /persons with high RPS
+#   - Cleanup flow: iterate over seeded IDs and DELETE each one
+#
+# Flow DAG:  seed-persons → stress-read → cleanup-persons
+################################################################################
+
+base_url: http://localhost:8080
+
+auth_profiles:
+  - name: app-user
+    type: custom_login
+    login_endpoint: /auth/login
+    method: POST
+    payload: |
+      { "email": "${TEST_USER}", "password": "${TEST_PASS}" }
+    extract_token:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+    refresh_endpoint: /auth/refresh
+    refresh_method: POST
+    refresh_payload: |
+      { "refresh_token": "{{ .refresh_token }}" }
+    refresh_extract:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+
+flows:
+  # ── 1. Seed: create 20 persons, collect their IDs ─────────────────────────
+  - name: seed-persons
+    type: end-to-end
+    duration: 10s
+    requests_per_second: 2
+    auth: app-user
+    steps:
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template
+        payload_template: |
+          {
+            "first_name": "Seed",
+            "last_name":  "Person",
+            "email":      "seed-{{ randomUUID }}@stress.dev",
+            "phone":      "+1-555-{{ randomDigits 4 }}"
+          }
+        extract:
+          - field: response.body.id
+            as: person_id
+            global_list: true   # collect all created IDs
+
+  # ── 2. Stress: read-only load against /persons ────────────────────────────
+  - name: stress-read
+    type: alone
+    duration: 20s
+    requests_per_second: 30
+    auth: app-user
+    depends_on:
+      - seed-persons
+    steps:
+      - id: list-persons
+        endpoint: /persons
+        method: GET
+
+  # ── 3. Cleanup: delete every seeded person ────────────────────────────────
+  - name: cleanup-persons
+    type: iterate
+    auth: app-user
+    depends_on:
+      - stress-read
+    iterate_list: seed-persons.person_id
+    item_variable: pid
+    steps:
+      - id: delete-person
+        endpoint: /persons/{{ .pid }}
+        method: DELETE

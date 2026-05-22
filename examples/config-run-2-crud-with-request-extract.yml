@@ -1,0 +1,80 @@
+################################################################################
+# config-run-2-crud-with-request-extract.yml
+#
+# Demonstrates:
+#   - Full CRUD lifecycle (POST → GET → PATCH → DELETE) in a single end-to-end flow
+#   - Extracting a value from the REQUEST payload (from: request) to keep the
+#     email used at creation and verify it later
+#   - Using extracted IDs and emails in subsequent step templates
+################################################################################
+
+base_url: http://localhost:8080
+
+auth_profiles:
+  - name: app-user
+    type: custom_login
+    login_endpoint: /auth/login
+    method: POST
+    payload: |
+      { "email": "${TEST_USER}", "password": "${TEST_PASS}" }
+    extract_token:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+    refresh_endpoint: /auth/refresh
+    refresh_method: POST
+    refresh_payload: |
+      { "refresh_token": "{{ .refresh_token }}" }
+    refresh_extract:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+
+flows:
+  - name: person-crud-with-request-extract
+    type: end-to-end
+    duration: 30s
+    requests_per_second: 5
+    auth: app-user
+    steps:
+      # Create a new person using a fixed payload
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template
+        payload_template: |
+          {
+            "first_name": "Test",
+            "last_name":  "User",
+            "email":      "crud-{{ randomUUID }}@example.com",
+            "phone":      "+1-555-{{ randomDigits 4 }}"
+          }
+        extract:
+          # Extract the ID from the RESPONSE body (normal)
+          - field: response.body.id
+            as: person_id
+          # Extract the email from the REQUEST payload (new feature: from: request)
+          - field: request.body.email
+            as: created_email
+            from: request
+
+      # Read the person back and verify the email matches
+      - id: get-person
+        endpoint: /persons/{{ .person_id }}
+        method: GET
+        extract:
+          - field: response.body.email
+            as: verified_email
+
+      # Patch the phone number
+      - id: patch-phone
+        endpoint: /persons/{{ .person_id }}
+        method: PATCH
+        payload_strategy: template
+        payload_template: |
+          { "phone": "+1-555-{{ randomDigits 4 }}" }
+
+      # Delete the person
+      - id: delete-person
+        endpoint: /persons/{{ .person_id }}
+        method: DELETE
