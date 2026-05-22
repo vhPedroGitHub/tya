@@ -248,9 +248,19 @@ type Step struct {
 }
 
 // Extractor pulls a value from a step's response into the flow context.
+// Extractor pulls a value from a step's response (or request payload) into
+// the flow context and optionally into the GlobalBucket.
 type Extractor struct {
+	// Field is the dot-notation path to the value, e.g. "response.body.data[0].id".
+	// When From is "request", the path is relative to the outgoing request body,
+	// e.g. "request.body.email".
 	Field string `yaml:"field"`
-	As    string `yaml:"as"`
+	// As is the key under which the extracted value is stored in the flow context.
+	As string `yaml:"as"`
+	// From controls the extraction source. Accepted values: "response" (default),
+	// "request". When set to "request", the value is extracted from the outgoing
+	// request payload instead of the response body.
+	From string `yaml:"from,omitempty"`
 	// Global, when true, also writes the extracted value into the GlobalBucket
 	// under the flow's own namespace, making it available to other flows via
 	// {{ index .global "flow-name" "key" }} or {{ globalGet "flow-name" "key" }}.
@@ -259,6 +269,11 @@ type Extractor struct {
 	// GlobalBucket under the flow's own namespace. Lists are read by iterate
 	// flows via {{ globalGetList "flow-name" "key" }}.
 	GlobalList bool `yaml:"global_list,omitempty"`
+	// Expand, when true and the extracted value is a JSON array, expands the
+	// array so that each element is appended individually to the GlobalBucket
+	// list instead of storing the whole array as a single item. Only meaningful
+	// when GlobalList is also true.
+	Expand bool `yaml:"expand,omitempty"`
 }
 
 // DefaultRunConfig returns a minimal RunConfig skeleton.

@@ -195,11 +195,12 @@ func newRunID() string {
 
 // stepResult holds the outcome of a single HTTP step execution.
 type stepResult struct {
-	StepID     string
-	StatusCode int
-	Latency    time.Duration
-	Err        error
-	Body       []byte
+	StepID      string
+	StatusCode  int
+	Latency     time.Duration
+	Err         error
+	Body        []byte
+	RequestBody []byte
 }
 
 // stepMetricsBucket accumulates counters for a single step.
@@ -254,7 +255,13 @@ func executeFlow(
 		duration = d
 	}
 	rps := flow.RequestsPerSecond
-	testMode := opts.TestMode || rps <= 0
+	// A flow runs in single-pass (test) mode when:
+	//   - the --test / -t flag is set globally, OR
+	//   - requests_per_second is 0 or not configured, OR
+	//   - the flow type is "alone" and neither duration nor rps is configured
+	//     (treat as a one-shot utility flow).
+	aloneNoConfig := strings.EqualFold(flow.Type, "alone") && flow.Duration == "" && rps <= 0
+	testMode := opts.TestMode || rps <= 0 || aloneNoConfig
 
 	// Per-step metric accumulators.
 	stepBuckets := make(map[string]*stepMetricsBucket, len(flow.Steps))
@@ -332,7 +339,7 @@ func executeFlow(
 					zap.Error(res.Err),
 				)
 			} else {
-				applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
+				applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
 			}
 		}
 		if iterOK {
@@ -437,7 +444,7 @@ func executeFlow(
 					if res.Err != nil || res.StatusCode >= 400 {
 						iterOK = false
 					} else {
-						applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
+						applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
 					}
 				}
 				if iterOK {
@@ -905,7 +912,7 @@ func executeWireFlow(
 				zap.Error(res.Err),
 			)
 		} else {
-			applyExtracts(step.Extract, res.Body, fCtx, wf.Name, bucket)
+			applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, wf.Name, bucket)
 		}
 		reports = append(reports, cli_functions.StepReport{
 			StepID:   id,
@@ -1048,7 +1055,7 @@ func executeIterateFlow(
 					zap.Error(res.Err),
 				)
 			} else {
-				applyExtracts(step.Extract, res.Body, fCtx, flow.Name, bucket)
+				applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, flow.Name, bucket)
 			}
 		}
 	}
@@ -1178,6 +1185,16 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx cli_functions.FlowCo
 	baseURL, _ := fCtx["_base_url"].(string)
 	url := baseURL + endpoint
 
+	// Capture the request body bytes so they can be used for extraction later.
+	var requestBody []byte
+	if bodyReader != nil {
+		requestBody, err = io.ReadAll(bodyReader)
+		if err != nil {
+			return stepResult{Err: fmt.Errorf("read request body: %w", err)}
+		}
+		bodyReader = bytes.NewReader(requestBody)
+	}
+
 	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
 		return stepResult{Err: fmt.Errorf("build request: %w", err)}
@@ -1206,10 +1223,11 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx cli_functions.FlowCo
 	)
 
 	return stepResult{
-		StepID:     step.ID,
-		StatusCode: resp.StatusCode,
-		Latency:    latency,
-		Body:       body,
+		StepID:      step.ID,
+		StatusCode:  resp.StatusCode,
+		Latency:     latency,
+		Body:        body,
+		RequestBody: requestBody,
 	}
 }
 
@@ -1315,29 +1333,69 @@ func injectAuth(req *http.Request, auth configyml.AuthProfile, fCtx cli_function
 // Extract + navigate helpers
 // ---------------------------------------------------------------------------
 
-// applyExtracts pulls values out of a JSON response body and stores them in fCtx.
-// If an extractor has Global == true, the value is also written to the shared
-// GlobalBucket under the flow's own namespace, making it available to other
-// flows via {{ index .global "flow-name" "key" }}.
-// If an extractor has GlobalList == true, the value is appended to a list in
-// the GlobalBucket under the flow's own namespace, making it available to
-// iterate flows via {{ globalGetList "flow-name" "key" }}.
-func applyExtracts(extractors []configyml.Extractor, body []byte, fCtx cli_functions.FlowContext, flowName string, bucket *cli_functions.GlobalBucket) {
-	if len(extractors) == 0 || len(body) == 0 {
+// applyExtracts pulls values out of a JSON response (or request) body and
+// stores them in fCtx and optionally in the GlobalBucket.
+//
+// When an extractor has From == "request", the value is extracted from
+// requestBody instead of responseBody.
+//
+// When GlobalList is true and Expand is true, and the extracted value is a
+// JSON array ([]any), each element of the array is appended individually to
+// the GlobalBucket list instead of storing the whole array as a single item.
+func applyExtracts(extractors []configyml.Extractor, responseBody []byte, requestBody []byte, fCtx cli_functions.FlowContext, flowName string, bucket *cli_functions.GlobalBucket) {
+	if len(extractors) == 0 {
 		return
 	}
-	var parsed any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return
+
+	// Parse response body once (may be nil/empty for non-JSON responses).
+	var parsedResponse any
+	if len(responseBody) > 0 {
+		_ = json.Unmarshal(responseBody, &parsedResponse)
 	}
+
+	// Parse request body once.
+	var parsedRequest any
+	if len(requestBody) > 0 {
+		_ = json.Unmarshal(requestBody, &parsedRequest)
+	}
+
 	for _, e := range extractors {
+		// Select source document.
+		source := parsedResponse
+		if strings.EqualFold(e.From, "request") {
+			source = parsedRequest
+			// For request paths, strip "request.body." prefix via navigate's
+			// existing "response"/"body" pass-through logic — we reuse the same
+			// helper by treating "request" as a skip-word too.
+		}
+		if source == nil {
+			continue
+		}
+
 		parts := strings.Split(e.Field, ".")
-		if val := navigate(parsed, parts); val != nil {
-			fCtx[e.As] = val
-			if e.Global {
-				bucket.Set(flowName, e.As, val)
-			}
-			if e.GlobalList {
+		val := navigate(source, parts)
+		if val == nil {
+			continue
+		}
+
+		fCtx[e.As] = val
+
+		if e.Global {
+			bucket.Set(flowName, e.As, val)
+		}
+
+		if e.GlobalList {
+			if e.Expand {
+				// If the value is a []any, expand each element as a separate entry.
+				if arr, ok := val.([]any); ok {
+					for _, elem := range arr {
+						bucket.AppendList(flowName, e.As, elem)
+					}
+				} else {
+					// Not an array — fall back to appending the value as-is.
+					bucket.AppendList(flowName, e.As, val)
+				}
+			} else {
 				bucket.AppendList(flowName, e.As, val)
 			}
 		}
@@ -1345,11 +1403,11 @@ func applyExtracts(extractors []configyml.Extractor, body []byte, fCtx cli_funct
 }
 
 // navigate traverses nested maps/slices following dot-split path segments.
-// Recognises "response" and "body" as pass-through prefixes, and supports
-// array index notation such as "items[0]".
+// Recognises "response", "request", and "body" as pass-through prefixes, and
+// supports array index notation such as "items[0]".
 func navigate(v any, parts []string) any {
 	for _, part := range parts {
-		if part == "response" || part == "body" {
+		if part == "response" || part == "request" || part == "body" {
 			continue
 		}
 		if idx := arrayIndex(part); idx >= 0 {

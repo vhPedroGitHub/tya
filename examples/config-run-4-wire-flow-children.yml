@@ -1,0 +1,74 @@
+################################################################################
+# config-run-4-wire-flow-children.yml
+#
+# Demonstrates:
+#   - Wire-flow children: run after the parent goroutine pool drains
+#   - The child receives the final flow context, so it can read the last
+#     person_id created and verify it still exists
+#   - also tests PATCH + GET in the child to inspect state post-load
+################################################################################
+
+base_url: http://localhost:8080
+
+auth_profiles:
+  - name: app-user
+    type: custom_login
+    login_endpoint: /auth/login
+    method: POST
+    payload: |
+      { "email": "${TEST_USER}", "password": "${TEST_PASS}" }
+    extract_token:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+    refresh_endpoint: /auth/refresh
+    refresh_method: POST
+    refresh_payload: |
+      { "refresh_token": "{{ .refresh_token }}" }
+    refresh_extract:
+      access_token:  response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in:    response.body.expires_in
+
+flows:
+  - name: create-and-patch
+    type: end-to-end
+    duration: 20s
+    requests_per_second: 5
+    auth: app-user
+    steps:
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: template
+        payload_template: |
+          {
+            "first_name": "Wire",
+            "last_name":  "Child",
+            "email":      "wire-{{ randomUUID }}@children.dev",
+            "phone":      "+1-555-{{ randomDigits 4 }}"
+          }
+        extract:
+          - field: response.body.id
+            as: person_id
+
+      - id: patch-person
+        endpoint: /persons/{{ .person_id }}
+        method: PATCH
+        payload_strategy: template
+        payload_template: |
+          { "last_name": "Patched" }
+
+    children:
+      # Runs once after the load pool drains, using the last goroutine's context
+      - name: verify-last-person
+        type: alone
+        auth: app-user
+        steps:
+          - id: get-last-person
+            endpoint: /persons/{{ .person_id }}
+            method: GET
+
+          - id: delete-last-person
+            endpoint: /persons/{{ .person_id }}
+            method: DELETE
