@@ -410,10 +410,9 @@ func executeFlow(
 		rampStart := time.Now()
 		stableWindows := 0
 		prevWindowRPS := 0.0
-		plateauReached := false
 		maxReached := false
 
-		for !plateauReached {
+		for {
 			windowItersBefore := atomic.LoadInt64(&totalIterations)
 			ticker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
 			winTimer := time.NewTimer(stepWin)
@@ -451,7 +450,6 @@ func executeFlow(
 			prevWindowRPS = windowRPS
 
 			if stableWindows >= rampCfg.StabilityWindows {
-				plateauReached = true
 				if windowRPS < targetRPS*0.95 {
 					maxReached = true
 					log.Warn("ramp-up: target RPS unreachable, running at max achievable",
