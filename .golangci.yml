@@ -1,18 +1,5 @@
+version: "2"
+
 run:
-  # Tell golangci-lint to analyse as Go 1.24 — the version it was built with.
-  # Our code uses no features beyond 1.22 so this is safe.
-  go: "1.24"
+  go: "1.25"
   timeout: 5m
-
-linters:
-  enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-
-linters-settings:
-  govet:
-    enable-all: false

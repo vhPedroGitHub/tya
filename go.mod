@@ -1,6 +1,6 @@
 module tya
 
-go 1.26.1
+go 1.25.0
 
 require (
 	github.com/brianvoe/gofakeit/v6 v6.28.0
@@ -8,7 +8,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.22.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

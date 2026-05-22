@@ -500,7 +500,7 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx cli_functions.FlowCo
 	if err != nil {
 		return stepResult{Err: err, Latency: latency}
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	body, _ := io.ReadAll(resp.Body)
 
 	log.Debug("step executed",
@@ -540,7 +540,7 @@ func acquireToken(log *zap.Logger, auth configyml.AuthProfile, baseURL string, f
 			log.Warn("auth: login request failed", zap.Error(err))
 			return
 		}
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode >= 400 {
 			log.Warn("auth: login returned error",
@@ -580,7 +580,7 @@ func acquireToken(log *zap.Logger, auth configyml.AuthProfile, baseURL string, f
 			log.Warn("auth: oauth2 request failed", zap.Error(err))
 			return
 		}
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
 		var parsed map[string]any
 		if err := json.Unmarshal(body, &parsed); err == nil {
@@ -680,7 +680,7 @@ func arrayIndex(s string) int {
 		return -1
 	}
 	var idx int
-	fmt.Sscanf(s[start+1:end], "%d", &idx)
+	_, _ = fmt.Sscanf(s[start+1:end], "%d", &idx)
 	return idx
 }
 

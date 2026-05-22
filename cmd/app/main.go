@@ -222,12 +222,8 @@ func (a *app) routes() {
 }
 
 // ---------------------------------------------------------------------------
-// Middleware
 // ---------------------------------------------------------------------------
-
-type contextKey string
-
-const ctxUserID contextKey = "user_id"
+// Auth middleware
 
 // protected wraps a handler requiring a valid Bearer access token.
 func (a *app) protected(next http.HandlerFunc) http.HandlerFunc {
@@ -248,12 +244,7 @@ func (a *app) protected(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func userIDFromReq(r *http.Request) int64 {
-	id, _ := strconv.ParseInt(r.Header.Get("X-User-ID"), 10, 64)
-	return id
-}
-
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------// ---------------------------------------------------------------------------
 // Auth handlers
 // ---------------------------------------------------------------------------
 
@@ -416,7 +407,7 @@ func (a *app) handleListPersons(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	persons := []Person{}
 	for rows.Next() {
@@ -653,7 +644,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func main() {
 	cfg := loadConfig()
 	db := openDB(cfg.DBPath)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
