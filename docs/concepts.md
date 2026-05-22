@@ -99,6 +99,7 @@ steps:
 | `fixed` | Uses the file at `payload_file` |
 | `template` | Renders `payload_template` as a Go `text/template` against the flow context |
 | `extracted` | Uses the full response body from a previous step (`from_step`) |
+| `template-json` | Loads a base JSON (from `payload_file` or a random payload) and applies field-level overrides rendered as templates |
 
 **Template example:**
 
@@ -112,6 +113,58 @@ steps:
       "product_id": "{{ .product_id }}",
       "quantity": 1
     }
+```
+
+**`template-json` example:**
+
+Use `template-json` when you want to reuse a rich pre-generated payload (realistic fake data) but need to override specific fields at runtime — for example, to guarantee a unique email per goroutine:
+
+```yaml
+- id: create-user
+  endpoint: /persons
+  method: POST
+  payload_strategy: template-json
+  payload_overrides:
+    email: "user-{{ uuid }}@example.com"
+    phone: "+1-555-{{ randomDigits 7 }}"
+  extract:
+    - field: response.body.id
+      as: user_id
+```
+
+`payload_file` is optional. When omitted, a random payload is selected from `api/<endpoint>/<METHOD>/` and the overrides are applied on top. Each override value is a template string rendered against the current flow context. Numeric and boolean override values are preserved as their native JSON types.
+
+---
+
+### Template Functions
+
+All template strings — `payload_template`, `payload_overrides` values, and endpoint paths — support the following built-in functions in addition to standard Go `text/template` syntax:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `uuid` | `uuid` | Random UUID v4 string, e.g. `"a1b2c3d4-e5f6-4..."` |
+| `randomInt` | `randomInt` | Random non-negative integer as a string |
+| `randomInt64` | `randomInt64` | Random non-negative int64 as a string |
+| `randomDigits` | `randomDigits N` | String of exactly N random decimal digits |
+| `timestamp` | `timestamp` | Current Unix timestamp in seconds |
+| `timestampMs` | `timestampMs` | Current Unix timestamp in milliseconds |
+| `upper` | `upper "hello"` | Converts a string to upper-case |
+| `lower` | `lower "HELLO"` | Converts a string to lower-case |
+
+**Examples:**
+
+```yaml
+# Unique email per goroutine — never collides under concurrent load
+email: "user-{{ uuid }}@example.com"
+
+# Unique username with timestamp suffix
+username: "load-user-{{ timestampMs }}"
+
+# Random phone number
+phone: "+1-555-{{ randomDigits 7 }}"
+
+# Dynamic endpoint path
+endpoint: /orders/{{ .order_id }}/items/{{ randomInt }}
 ```
 
 Environment variables can be interpolated with `${VAR}` inside templates and fixed payloads.
@@ -304,10 +357,13 @@ flows:
       - id: ...
         endpoint: /path
         method: GET | POST | PUT | PATCH | DELETE
-        payload_strategy: random | fixed | template | extracted
-        payload_file: ...        # for fixed
+        payload_strategy: random | fixed | template | extracted | template-json
+        payload_file: ...        # for fixed; optional base for template-json
         payload_template: |      # for template
           { ... }
+        payload_overrides:       # for template-json — dot-path: template-string
+          email: "user-{{ uuid }}@example.com"
+          phone: "+1-{{ randomDigits 10 }}"
         from_step: ...           # for extracted
         extract:
           - field: response.body.some.path
