@@ -186,15 +186,62 @@ auth_profiles:
 
 ## Execution Engine
 
-The `run` command uses a goroutine-based load engine:
+The `run` command uses a **four-phase adaptive load engine** per flow:
 
-- A controller goroutine manages a pool of worker goroutines.
-- Workers stream metrics (latency, status code, errors) to the controller via channels.
-- The controller auto-scales workers to hit the target RPS, backing off on diminishing returns or resource pressure.
-- Flows with `depends_on` block until their dependencies close their done-channels.
-- Wire-flow children run sequentially after the parent pool drains.
+### Phase 1 & 2 — Ramp-up and Plateau Detection
 
-See [metrics.md](metrics.md) for the report format produced at the end of a run.
+Instead of slamming the target RPS from the first tick, TYA grows load incrementally:
+
+1. Starts at `initial_rps` (default: 1).
+2. Each **step window** (`step_window`, default: 2 s), it measures the observed RPS.
+3. Multiplies the ticker rate by `factor` (default: 1.5) until target RPS is reached.
+4. Declares plateau when `stability_windows` (default: 3) consecutive windows are all within `stability_threshold` (default: 5 %) of each other.
+
+If the target RPS is never reachable (system saturated), TYA logs a warning and runs the analysis at the highest achievable rate (`stable_rps_max_reached: true` in the report).
+
+### Phase 3 — Analysis Window
+
+Once plateau is detected, the `duration` timer starts, metrics are reset, and TYA collects the stable-state measurements. The ramp-up time is reported separately as `ramp_up_duration_s`.
+
+### Phase 4 — Drain
+
+After the analysis window expires, TYA waits for all in-flight goroutines to finish (`wg.Wait()`) before signalling completion to dependent flows.
+
+### Concurrency Cap
+
+A semaphore limits concurrent goroutines to `ceil(currentRPS × p95_latency_s × 1.5)` (minimum 8). This prevents goroutines from accumulating unboundedly when the target API is slow — a classic runaway load-generator failure mode.
+
+### Think-Time
+
+After executing all steps, each goroutine sleeps for the remainder of its target iteration duration:
+
+```
+think_time = max(0, (N_steps / current_rps) − actual_elapsed)
+```
+
+This self-regulates the pace without relying on an external ticker alone. The semaphore slot is held during the sleep, contributing to the concurrency measurement. The mean applied think-time is reported as `think_time_applied_ms`.
+
+### Configuring Ramp-Up Per Flow
+
+Add an optional `ramp_up:` section to any flow. Omit it entirely to use the built-in defaults.
+
+```yaml
+flows:
+  - name: heavy-load
+    type: end-to-end
+    duration: 60s
+    requests_per_second: 100
+    ramp_up:
+      initial_rps: 2          # Start here (default: 1)
+      factor: 2.0             # Growth multiplier per step (default: 1.5)
+      step_window: 3s         # Measurement window per ramp step (default: 2s)
+      stability_windows: 4    # Consecutive stable windows needed (default: 3)
+      stability_threshold: 0.03  # Max relative variation for "stable" (default: 0.05)
+    steps:
+      - ...
+```
+
+See [metrics.md](metrics.md) for the full report format including all adaptive engine fields.
 
 ---
 
@@ -230,6 +277,12 @@ flows:
     auth: <profile-name>
     depends_on: [...]
     children: [...]
+    ramp_up:                     # optional; all sub-fields have defaults
+      initial_rps: 1
+      factor: 1.5
+      step_window: 2s
+      stability_windows: 3
+      stability_threshold: 0.05
     steps:
       - id: ...
         endpoint: /path

@@ -198,11 +198,12 @@ def build_pdf(report: dict, output_path: str) -> None:
     summary_header = [
         Paragraph("<b>Flow</b>", body_style),
         Paragraph("<b>Type</b>", body_style),
-        Paragraph("<b>Total req</b>", body_style),
-        Paragraph("<b>Success</b>", body_style),
-        Paragraph("<b>Failed</b>", body_style),
-        Paragraph("<b>Error rate</b>", body_style),
-        Paragraph("<b>RPS</b>", body_style),
+        Paragraph("<b>Reqs</b>", body_style),
+        Paragraph("<b>Errors</b>", body_style),
+        Paragraph("<b>Error %</b>", body_style),
+        Paragraph("<b>RPS target</b>", body_style),
+        Paragraph("<b>RPS actual</b>", body_style),
+        Paragraph("<b>Ramp (s)</b>", body_style),
         Paragraph("<b>p50 (ms)</b>", body_style),
         Paragraph("<b>p95 (ms)</b>", body_style),
         Paragraph("<b>p99 (ms)</b>", body_style),
@@ -213,27 +214,30 @@ def build_pdf(report: dict, output_path: str) -> None:
         total = flow.get("total_requests", 0)
         failed = flow.get("failed_requests", 0)
         lat = flow.get("latency_ms", {})
-        rate = failed / total if total > 0 else 0
         cell_color = _status_colour(failed, total)
         err_cell = Paragraph(
             f'<font color="{cell_color.hexval()}">{_error_rate(total, failed)}</font>',
             body_style,
         )
+        rps_target = flow.get("stable_rps_target", 0) or flow.get("rps_achieved", 0)
+        rps_actual = flow.get("stable_rps_achieved", 0) or flow.get("rps_achieved", 0)
+        ramp_s = flow.get("ramp_up_duration_s", 0)
         summary_rows.append([
             Paragraph(flow_name, body_style),
             Paragraph(flow.get("type", ""), body_style),
             Paragraph(str(total), body_style),
-            Paragraph(str(flow.get("successful_requests", 0)), body_style),
             Paragraph(str(failed), body_style),
             err_cell,
-            Paragraph(_fmt_float(flow.get("rps_achieved", 0), 1), body_style),
+            Paragraph(_fmt_float(rps_target, 1), body_style),
+            Paragraph(_fmt_float(rps_actual, 1), body_style),
+            Paragraph(_fmt_float(ramp_s, 1), body_style),
             Paragraph(_fmt_ms(lat.get("p50", 0)), body_style),
             Paragraph(_fmt_ms(lat.get("p95", 0)), body_style),
             Paragraph(_fmt_ms(lat.get("p99", 0)), body_style),
         ])
 
-    col_w = [3.8 * cm, 1.8 * cm, 1.6 * cm, 1.6 * cm, 1.4 * cm,
-             1.8 * cm, 1.4 * cm, 1.8 * cm, 1.8 * cm, 1.8 * cm]
+    col_w = [3.4*cm, 1.6*cm, 1.4*cm, 1.4*cm, 1.6*cm,
+             1.8*cm, 1.8*cm, 1.6*cm, 1.8*cm, 1.8*cm, 1.8*cm]
     summary_table = Table(summary_rows, colWidths=col_w, repeatRows=1)
     summary_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), ACCENT),
@@ -262,13 +266,17 @@ def build_pdf(report: dict, output_path: str) -> None:
         lat = flow.get("latency_ms", {})
 
         # Flow KPIs
+        rps_target = flow.get("stable_rps_target", 0) or flow.get("rps_achieved", 0)
+        rps_actual = flow.get("stable_rps_achieved", 0) or flow.get("rps_achieved", 0)
         kpi_data = [
             ["Type", flow.get("type", "—"),
-             "RPS achieved", _fmt_float(flow.get("rps_achieved", 0), 1)],
+             "RPS target", _fmt_float(rps_target, 1)],
             ["Total requests", str(total),
-             "Error rate", _error_rate(total, failed)],
+             "RPS achieved", _fmt_float(rps_actual, 1)],
             ["Successful", str(flow.get("successful_requests", 0)),
              "Failed", str(failed)],
+            ["Error rate", _error_rate(total, failed),
+             "Analysis window", f"{flow.get('analysis_duration_s', 0):.1f} s"],
         ]
         kpi_table = Table(kpi_data, colWidths=[3 * cm, 4 * cm, 3 * cm, 4 * cm])
         kpi_table.setStyle(TableStyle([
@@ -318,6 +326,40 @@ def build_pdf(report: dict, output_path: str) -> None:
         ]))
         story.append(lat_table)
         story.append(Spacer(1, 0.4 * cm))
+
+        # Ramp-up & adaptive engine metrics (only if load-test mode ran)
+        ramp_s = flow.get("ramp_up_duration_s", 0)
+        avg_conc = flow.get("avg_concurrency", 0)
+        max_conc = flow.get("max_concurrency", 0)
+        think_ms = flow.get("think_time_applied_ms", 0)
+        max_reached = flow.get("stable_rps_max_reached", False)
+
+        if ramp_s > 0 or avg_conc > 0:
+            story.append(Paragraph("Adaptive Engine Metrics", h3_style))
+            engine_data = [
+                ["Ramp-up duration", f"{ramp_s:.2f} s",
+                 "Analysis duration", f"{flow.get('analysis_duration_s', 0):.2f} s"],
+                ["Avg concurrency", _fmt_float(avg_conc, 1),
+                 "Max concurrency", str(max_conc)],
+                ["Mean think-time", _fmt_ms(think_ms),
+                 "Target RPS reached", "No ⚠" if max_reached else "Yes"],
+            ]
+            engine_table = Table(engine_data, colWidths=[3.5*cm, 3.5*cm, 3.5*cm, 3.5*cm])
+            engine_table.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("TEXTCOLOR", (0, 0), (0, -1), ACCENT),
+                ("TEXTCOLOR", (2, 0), (2, -1), ACCENT),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [LIGHT_GRAY, WHITE]),
+                ("GRID", (0, 0), (-1, -1), 0.3, MID_GRAY),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.append(engine_table)
+            story.append(Spacer(1, 0.4 * cm))
 
         # Steps table
         steps = flow.get("steps", [])
