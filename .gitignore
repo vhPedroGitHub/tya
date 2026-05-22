@@ -34,3 +34,4 @@ tya-report-*.json
 *.swo
 *~
 Thumbs.db
+examples/
