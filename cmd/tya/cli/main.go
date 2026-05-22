@@ -26,12 +26,16 @@ func main() {
 Commands:
   init    Initialise a new TYA project
   create  Generate payload fixtures from an OpenAPI spec
-  run     Execute flows against a live API`,
+  run     Execute flows against a live API
+  genk6   Generate k6 load-test scripts from a TYA config
+  runk6s  Run generated k6 load-test scripts`,
 	}
 
 	root.AddCommand(commands.NewInitCmd(log))
 	root.AddCommand(commands.NewCreateCmd(log))
 	root.AddCommand(commands.NewRunCmd(log))
+	root.AddCommand(commands.NewGenK6Cmd(log))
+	root.AddCommand(commands.NewRunK6SCmd(log))
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
