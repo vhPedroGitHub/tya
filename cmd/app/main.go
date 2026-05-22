@@ -31,7 +31,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,10 +87,13 @@ func getEnv(key, fallback string) string {
 // ---------------------------------------------------------------------------
 
 func openDB(path string) *sql.DB {
-	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on")
+	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000")
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
+	// SQLite supports only one concurrent writer; serialise all writes through
+	// a single connection to avoid SQLITE_BUSY errors under load.
+	db.SetMaxOpenConns(1)
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
@@ -158,10 +163,17 @@ type claims struct {
 
 func (cfg config) signToken(userID int64, kind string, ttl time.Duration) (string, error) {
 	now := time.Now()
+	// Generate a random jti so tokens issued in the same second are distinct,
+	// preventing UNIQUE constraint collisions in refresh_tokens.
+	jtiBytes := make([]byte, 8)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", err
+	}
 	c := claims{
 		UserID: userID,
 		Kind:   kind,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        hex.EncodeToString(jtiBytes),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},

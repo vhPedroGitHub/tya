@@ -74,6 +74,7 @@ func (c CreateConfig) PayloadCount(endpoint, method string) int {
 
 // RunConfig is the schema for config-run.yml.
 type RunConfig struct {
+	BaseURL      string        `yaml:"base_url,omitempty"`
 	AuthProfiles []AuthProfile `yaml:"auth_profiles,omitempty"`
 	Flows        []Flow        `yaml:"flows"`
 }
