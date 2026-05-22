@@ -38,7 +38,10 @@ type FlowReport struct {
 	TotalRequests      int64            `json:"total_requests"`
 	SuccessfulRequests int64            `json:"successful_requests"`
 	FailedRequests     int64            `json:"failed_requests"`
-	RPSAchieved        float64          `json:"rps_achieved"`
+	// RPSAchieved is the measured HTTP calls per second during the analysis window.
+	RPSAchieved float64 `json:"rps_achieved"`
+	// IterationsPerSecond is the measured flow iterations per second (= RPSAchieved / N steps).
+	IterationsPerSecond float64 `json:"iterations_per_second,omitempty"`
 	LatencyMS          LatencyStats     `json:"latency_ms"`
 	Steps              []StepReport     `json:"steps"`
 	Children           []StepReport     `json:"children,omitempty"`

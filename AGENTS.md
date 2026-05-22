@@ -403,12 +403,14 @@ The access token is automatically injected into every step's request headers. No
 
 The `run` command uses a goroutine-based load engine to reach the target `requests_per_second`:
 
-- A **controller goroutine** manages a pool of worker goroutines, spinning them up incrementally.
-- Workers stream metrics (latency, status code, errors, throughput) to the controller via a channel.
-- The controller **auto-scales**:
-  - Spawns more workers if measured RPS is below target.
-  - Caps workers if target RPS is reached.
-  - Backs off if system resources (CPU, memory) are under pressure or if adding goroutines no longer increases throughput (diminishing returns detection).
+- **`requests_per_second` always means HTTP calls/s**, regardless of how many steps a flow has. For a flow with N steps, the engine fires one goroutine every `N / rps` seconds, so the resulting HTTP call rate equals `rps`.
+- Each goroutine executes all N steps sequentially (one full flow iteration). After finishing it sleeps a **think-time** remainder so its total slot time equals `N / rps` seconds, self-regulating pace.
+- The engine runs in **4 phases**: ramp-up (multiplicative, `factor=1.5` default) → plateau detection (N stable windows) → analysis window (`duration` config applies here) → drain.
+- A semaphore caps concurrent goroutines to `ceil((rps/N) × p95_iter_s × 1.5)`, min 8.
+- The JSON report fields:
+  - `rps_achieved` — measured **HTTP calls/s** during the analysis window (`totalIterations × N / analysisDuration`)
+  - `iterations_per_second` — measured **flow iterations/s** (`rps_achieved / N`); useful for understanding goroutine throughput
+  - `stable_rps_target` / `stable_rps_achieved` — same as above but scoped to the adaptive engine section
 - At the end of the run, a **JSON report** is written with: p50/p95/p99 latency, total requests, error rate, per-step breakdown, and per-flow summary.
 
 ---

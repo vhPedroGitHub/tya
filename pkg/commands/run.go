@@ -322,13 +322,26 @@ func executeFlow(
 			stepWin = 2 * time.Second
 		}
 
+		// nSteps is used to convert between iteration rate and HTTP-call rate.
+		// ticker fires at (currentRPS / nSteps) iterations/s so that the
+		// actual HTTP call rate equals currentRPS calls/s.
+		nSteps := float64(len(flow.Steps))
+		if nSteps < 1 {
+			nSteps = 1
+		}
+
 		currentRPS := rampCfg.InitialRPS
 		targetRPS := flow.RequestsPerSecond
 
+		// tickInterval returns the ticker period required to produce the given
+		// HTTP-calls/s rate with nSteps per iteration.
+		tickInterval := func(httpRPS float64) time.Duration {
+			return time.Duration(float64(time.Second) * nSteps / httpRPS)
+		}
+
 		// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
-		// Initial cap = ceil(targetRPS * 10) — generous upper bound that gets
-		// refined after plateau is detected via observed p95 latency.
-		semCap := int(targetRPS*10) + 1
+		// Initial cap based on targetRPS (HTTP calls/s) converted to iterations/s.
+		semCap := int(targetRPS/nSteps*10) + 1
 		if semCap < 8 {
 			semCap = 8
 		}
@@ -387,13 +400,10 @@ func executeFlow(
 					lastCtxMu.Unlock()
 				}
 
-				// Think-time: sleep the remainder of the target iteration
-				// duration so that this goroutine self-regulates its pace.
-				// The slot is held during the sleep (occupies the semaphore).
-				nSteps := float64(len(flow.Steps))
-				if nSteps < 1 {
-					nSteps = 1
-				}
+				// Think-time: sleep the remainder of the target iteration duration
+				// so that this goroutine self-regulates its pace.
+				// targetIterDur = nSteps / launchRPS  (seconds per iteration
+				// when the goal is launchRPS HTTP calls/s with nSteps steps).
 				targetIterDur := time.Duration(float64(time.Second) * nSteps / launchRPS)
 				elapsed := time.Since(iterStart)
 				if thinkTime := targetIterDur - elapsed; thinkTime > 0 {
@@ -414,7 +424,7 @@ func executeFlow(
 
 		for {
 			windowItersBefore := atomic.LoadInt64(&totalIterations)
-			ticker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+			ticker := time.NewTicker(tickInterval(currentRPS))
 			winTimer := time.NewTimer(stepWin)
 		rampWindow:
 			for {
@@ -430,12 +440,13 @@ func executeFlow(
 			winTimer.Stop()
 
 			windowIters := atomic.LoadInt64(&totalIterations) - windowItersBefore
-			windowRPS := float64(windowIters) / stepWin.Seconds()
+			// Convert iterations to HTTP calls/s for comparison against targetRPS.
+			windowRPS := float64(windowIters) * nSteps / stepWin.Seconds()
 
 			log.Info("ramp-up window",
-				zap.Float64("current_rps_target", currentRPS),
-				zap.Float64("observed_rps", windowRPS),
-				zap.Float64("target_rps", targetRPS),
+				zap.Float64("current_http_rps_target", currentRPS),
+				zap.Float64("observed_http_rps", windowRPS),
+				zap.Float64("target_http_rps", targetRPS),
 			)
 
 			// Check stability: is the observed RPS within threshold of previous window?
@@ -470,15 +481,18 @@ func executeFlow(
 			currentRPS = nextRPS
 
 			// Recalculate semaphore cap using observed p95 latency estimate.
-			// cap = ceil(currentRPS * p95_s * 1.5), minimum 8.
+			// Concurrent goroutines needed = (HTTP calls/s / nSteps) * p95_iter_s * 1.5
+			// where p95_iter_s ≈ nSteps * p95_step_s.
 			allLatsMu.Lock()
 			latSnap := make([]time.Duration, len(allLats))
 			copy(latSnap, allLats)
 			allLatsMu.Unlock()
 			if len(latSnap) > 0 {
 				stats := computeLatencyStats(latSnap)
-				p95s := stats.P95 / 1000.0
-				newCap := int(currentRPS*p95s*1.5) + 1
+				// p95 per step (ms → s); multiply by nSteps for full iteration latency.
+				p95IterS := (stats.P95 / 1000.0) * nSteps
+				iterRPS := currentRPS / nSteps
+				newCap := int(iterRPS*p95IterS*1.5) + 1
 				if newCap < 8 {
 					newCap = 8
 				}
@@ -530,7 +544,7 @@ func executeFlow(
 		runCtx, cancel := context.WithTimeout(context.Background(), duration)
 		defer cancel()
 
-		analysisTicker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+		analysisTicker := time.NewTicker(tickInterval(currentRPS))
 		defer analysisTicker.Stop()
 
 	analysisLoop:
@@ -583,7 +597,9 @@ func executeFlow(
 		}
 
 		// Override the simple rpsAchieved calculation with analysis-window measurement.
-		rpsAchieved = float64(totalIterations) / analysisDuration.Seconds()
+		// rpsAchieved is HTTP calls/s = iterations × nSteps / analysisDuration.
+		iterationsPerSecond := float64(totalIterations) / analysisDuration.Seconds()
+		rpsAchieved = iterationsPerSecond * nSteps
 
 		// Patch the extra report fields via a closure over the named vars.
 		extraReportFields = func(r *cli_functions.FlowReport) {
@@ -591,6 +607,7 @@ func executeFlow(
 			r.AnalysisDurationS = analysisDuration.Seconds()
 			r.StableRPSTarget = targetRPS
 			r.StableRPSAchieved = rpsAchieved
+			r.IterationsPerSecond = iterationsPerSecond
 			r.StableRPSMaxReached = maxReached
 			r.AvgConcurrency = avgConc
 			r.MaxConcurrency = maxConc
@@ -612,9 +629,13 @@ func executeFlow(
 	allLatsMu.Unlock()
 
 	successful := totalRequests - totalErrors
-	// In test mode compute a simple rpsAchieved; load mode overrides via extraReportFields.
+	// In test mode compute a simple rpsAchieved (HTTP calls/s); load mode overrides via extraReportFields.
 	if !opts.TestMode && totalIterations > 0 && rpsAchieved == 0 {
-		rpsAchieved = float64(totalIterations) / duration.Seconds()
+		nStepsFallback := float64(len(flow.Steps))
+		if nStepsFallback < 1 {
+			nStepsFallback = 1
+		}
+		rpsAchieved = float64(totalIterations) * nStepsFallback / duration.Seconds()
 	}
 
 	errMu.Lock()
