@@ -48,6 +48,7 @@ TYA takes a different approach:
 | [Commands](docs/commands.md) | Full flag reference for `init`, `create`, and `run` |
 | [Metrics](docs/metrics.md) | JSON report format and how to interpret results |
 | [Docker Deploy](docs/docker.md) | Running TYA via Docker, GHCR image, Compose example |
+| [Distributed Testing](docs/distributed.md) | Coordinator node design for multi-machine load tests |
 
 ---
 
@@ -76,20 +77,23 @@ See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough.
 
 ## Upcoming Features
 
-### Redis-backed Distributed Load Testing
+### Distributed Load Testing via Coordinator Node
 
-> **Goal:** reach RPS targets (e.g. 1,000,000 req/s) that are not achievable from a single machine by coordinating multiple TYA instances through a shared Redis counter.
+> **Goal:** reach RPS targets (e.g. 1,000,000 req/s) that are not achievable from a single machine by coordinating multiple TYA worker nodes through a dedicated TYA coordinator node.
 
-Each TYA node runs independently and ramps up to its locally-configured `requests_per_second`. On every iteration, before sending the next request, the node consults Redis:
+One TYA instance runs in **coordinator mode** and is the single source of truth for the cluster. Worker nodes do not communicate with each other — they only talk to the coordinator.
 
-- A global key `tya:<run_id>:max_rps` holds the cluster-wide RPS ceiling.
-- A global key `tya:<run_id>:current_rps` holds the live aggregate RPS across all nodes, updated atomically.
-- Each node tracks whether its own RPS went up or down since the last window and **adds or subtracts its delta** from `current_rps` in Redis (`INCRBYFLOAT`).
-- If `current_rps ≥ max_rps`, the node stops growing (holds its current rate) until the aggregate drops back below the ceiling.
+**Each worker node**, on every ramp-up window, sends the coordinator two numbers:
+- its **current measured RPS**
+- its **local RPS target** (the `requests_per_second` defined in its own config)
 
-This allows tens or hundreds of TYA instances to collectively saturate high-capacity systems without any centralised controller — each node is self-regulating and the aggregate converges on the global target.
+**The coordinator** keeps a running sum of all workers' reported RPS (the cluster aggregate) and compares it against the global `max_rps` ceiling configured for the run. It then replies to each worker with a simple instruction:
+- **`grow`** — the aggregate is below the ceiling; the worker may continue ramping up.
+- **`hold`** — the aggregate has reached the ceiling; the worker must stop growing and maintain its current rate.
 
-See [docs/redis-distributed.md](docs/redis-distributed.md) for the detailed design proposal.
+This design avoids any shared mutable state: the coordinator is the only process writing aggregates, workers are the only processes sending load. There are no concurrent counter updates, no drift, and no external dependencies. If the coordinator goes away workers fall back to their local `requests_per_second` ceiling autonomously.
+
+See [docs/distributed.md](docs/distributed.md) for the detailed design proposal.
 
 ---
 
