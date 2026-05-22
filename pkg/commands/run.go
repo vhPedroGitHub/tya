@@ -235,6 +235,17 @@ func executeFlow(
 	errByStep := make(map[string]int64)
 	var errMu sync.Mutex
 
+	// thinkTime tracking (load mode only).
+	var thinkTimeSamples []time.Duration
+	var thinkTimeMu sync.Mutex
+
+	// extraReportFields is set by the adaptive engine to populate the new report
+	// fields; it is a no-op in test mode.
+	extraReportFields := func(_ *cli_functions.FlowReport) {}
+
+	// rpsAchieved is computed after the run; the adaptive engine overrides it.
+	var rpsAchieved float64
+
 	// lastCtx captures the final execution context from the last successful
 	// iteration; used by wire-flow children.
 	var lastCtxMu sync.Mutex
@@ -292,52 +303,299 @@ func executeFlow(
 		}
 		atomic.AddInt64(&totalIterations, 1)
 	} else {
-		// Load test mode.
-		runCtx, cancel := context.WithTimeout(context.Background(), duration)
-		defer cancel()
+		// -----------------------------------------------------------------------
+		// Adaptive load engine — four phases:
+		//   1. Ramp-up   : multiplicative ticker growth per step window
+		//   2. Plateau   : N consecutive step windows within stability threshold
+		//   3. Analysis  : stable window; duration timer + metrics live here
+		//   4. Drain     : wg.Wait() after context expires
+		// -----------------------------------------------------------------------
 
-		ticker := time.NewTicker(time.Duration(float64(time.Second) / rps))
-		defer ticker.Stop()
+		rampCfg := configyml.RampUp{}
+		if flow.RampUp != nil {
+			rampCfg = *flow.RampUp
+		}
+		rampCfg = rampCfg.Resolve()
 
-		runStart := time.Now()
-		var wg sync.WaitGroup
-	loop:
-		for {
+		stepWin, err := time.ParseDuration(rampCfg.StepWindow)
+		if err != nil {
+			stepWin = 2 * time.Second
+		}
+
+		currentRPS := rampCfg.InitialRPS
+		targetRPS := flow.RequestsPerSecond
+
+		// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
+		// Initial cap = ceil(targetRPS * 10) — generous upper bound that gets
+		// refined after plateau is detected via observed p95 latency.
+		semCap := int(targetRPS*10) + 1
+		if semCap < 8 {
+			semCap = 8
+		}
+		sem := make(chan struct{}, semCap)
+
+		// concurrency tracking
+		var concurrencySamples []int64
+		var concurrencyMu sync.Mutex
+		var activeConcurrency int64
+
+		sampleConcurrency := func(n int64) {
+			concurrencyMu.Lock()
+			concurrencySamples = append(concurrencySamples, n)
+			concurrencyMu.Unlock()
+		}
+
+		var rampWg sync.WaitGroup
+
+		spawnIteration := func(launchRPS float64) {
 			select {
-			case <-runCtx.Done():
-				break loop
-			case <-ticker.C:
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					fCtx := cli_functions.FlowContext{"_base_url": baseURL}
-					if flow.Auth != "" {
-						if auth, ok := authMap[flow.Auth]; ok {
-							acquireToken(log, auth, baseURL, fCtx)
-						}
+			case sem <- struct{}{}:
+			default:
+				// semaphore full — drop this tick to avoid runaway goroutines
+				return
+			}
+			cur := atomic.AddInt64(&activeConcurrency, 1)
+			sampleConcurrency(cur)
+			rampWg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					atomic.AddInt64(&activeConcurrency, -1)
+					rampWg.Done()
+				}()
+				fCtx := cli_functions.FlowContext{"_base_url": baseURL}
+				if flow.Auth != "" {
+					if auth, ok := authMap[flow.Auth]; ok {
+						acquireToken(log, auth, baseURL, fCtx)
 					}
-					iterOK := true
-					for _, step := range flow.Steps {
-						id := stepID(step)
-						res := executeStep(log, step, fCtx, authMap[flow.Auth])
-						recordResult(id, res)
-						if res.Err != nil || res.StatusCode >= 400 {
-							iterOK = false
-						} else {
-							applyExtracts(step.Extract, res.Body, fCtx)
-						}
+				}
+				iterStart := time.Now()
+				iterOK := true
+				for _, step := range flow.Steps {
+					id := stepID(step)
+					res := executeStep(log, step, fCtx, authMap[flow.Auth])
+					recordResult(id, res)
+					if res.Err != nil || res.StatusCode >= 400 {
+						iterOK = false
+					} else {
+						applyExtracts(step.Extract, res.Body, fCtx)
 					}
+				}
 				if iterOK {
 					lastCtxMu.Lock()
 					lastCtx = copyContext(fCtx)
 					lastCtxMu.Unlock()
 				}
-				atomic.AddInt64(&totalIterations, 1)
+
+				// Think-time: sleep the remainder of the target iteration
+				// duration so that this goroutine self-regulates its pace.
+				// The slot is held during the sleep (occupies the semaphore).
+				nSteps := float64(len(flow.Steps))
+				if nSteps < 1 {
+					nSteps = 1
+				}
+				targetIterDur := time.Duration(float64(time.Second) * nSteps / launchRPS)
+				elapsed := time.Since(iterStart)
+				if thinkTime := targetIterDur - elapsed; thinkTime > 0 {
+					thinkTimeMu.Lock()
+					thinkTimeSamples = append(thinkTimeSamples, thinkTime)
+					thinkTimeMu.Unlock()
+					time.Sleep(thinkTime)
+				}
 			}()
+		}
+
+		// ── Phase 1 + 2: Ramp-up and plateau detection ──────────────────────
+
+		rampStart := time.Now()
+		stableWindows := 0
+		prevWindowRPS := 0.0
+		maxReached := false
+
+		for {
+			windowItersBefore := atomic.LoadInt64(&totalIterations)
+			ticker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+			winTimer := time.NewTimer(stepWin)
+		rampWindow:
+			for {
+				select {
+				case <-winTimer.C:
+					ticker.Stop()
+					break rampWindow
+				case <-ticker.C:
+					atomic.AddInt64(&totalIterations, 1)
+					spawnIteration(currentRPS)
+				}
+			}
+			winTimer.Stop()
+
+			windowIters := atomic.LoadInt64(&totalIterations) - windowItersBefore
+			windowRPS := float64(windowIters) / stepWin.Seconds()
+
+			log.Info("ramp-up window",
+				zap.Float64("current_rps_target", currentRPS),
+				zap.Float64("observed_rps", windowRPS),
+				zap.Float64("target_rps", targetRPS),
+			)
+
+			// Check stability: is the observed RPS within threshold of previous window?
+			if prevWindowRPS > 0 {
+				variation := abs64((windowRPS - prevWindowRPS) / prevWindowRPS)
+				if variation <= rampCfg.StabilityThreshold {
+					stableWindows++
+				} else {
+					stableWindows = 0
+				}
+			}
+			prevWindowRPS = windowRPS
+
+			if stableWindows >= rampCfg.StabilityWindows {
+				if windowRPS < targetRPS*0.95 {
+					maxReached = true
+					log.Warn("ramp-up: target RPS unreachable, running at max achievable",
+						zap.Float64("target_rps", targetRPS),
+						zap.Float64("achieved_rps", windowRPS),
+					)
+				}
+				break
+			}
+
+			// Grow towards target.
+			nextRPS := currentRPS * rampCfg.Factor
+			if nextRPS >= targetRPS {
+				nextRPS = targetRPS
+				// Give it one more window at target before declaring plateau.
+				stableWindows = rampCfg.StabilityWindows - 1
+			}
+			currentRPS = nextRPS
+
+			// Recalculate semaphore cap using observed p95 latency estimate.
+			// cap = ceil(currentRPS * p95_s * 1.5), minimum 8.
+			allLatsMu.Lock()
+			latSnap := make([]time.Duration, len(allLats))
+			copy(latSnap, allLats)
+			allLatsMu.Unlock()
+			if len(latSnap) > 0 {
+				stats := computeLatencyStats(latSnap)
+				p95s := stats.P95 / 1000.0
+				newCap := int(currentRPS*p95s*1.5) + 1
+				if newCap < 8 {
+					newCap = 8
+				}
+				// Grow the semaphore if needed (never shrink during ramp).
+				if newCap > semCap {
+					semCap = newCap
+					sem = make(chan struct{}, semCap)
+				}
 			}
 		}
-		wg.Wait()
-		_ = runStart
+
+		rampDuration := time.Since(rampStart)
+
+		// Reset analysis-window metrics.
+		atomic.StoreInt64(&totalRequests, 0)
+		atomic.StoreInt64(&totalErrors, 0)
+		atomic.StoreInt64(&totalIterations, 0)
+		allLatsMu.Lock()
+		allLats = allLats[:0]
+		allLatsMu.Unlock()
+		for _, b := range stepBuckets {
+			atomic.StoreInt64(&b.requests, 0)
+			atomic.StoreInt64(&b.errors, 0)
+			b.mu.Lock()
+			b.latencies = b.latencies[:0]
+			b.mu.Unlock()
+		}
+		errMu.Lock()
+		for k := range errByStatus {
+			delete(errByStatus, k)
+		}
+		for k := range errByStep {
+			delete(errByStep, k)
+		}
+		errMu.Unlock()
+		concurrencyMu.Lock()
+		concurrencySamples = concurrencySamples[:0]
+		concurrencyMu.Unlock()
+
+		log.Info("plateau reached — starting analysis window",
+			zap.Float64("ramp_up_duration_s", rampDuration.Seconds()),
+			zap.Float64("stable_rps", currentRPS),
+			zap.Duration("analysis_duration", duration),
+		)
+
+		// ── Phase 3: Analysis window ─────────────────────────────────────────
+
+		analysisStart := time.Now()
+		runCtx, cancel := context.WithTimeout(context.Background(), duration)
+		defer cancel()
+
+		analysisTicker := time.NewTicker(time.Duration(float64(time.Second) / currentRPS))
+		defer analysisTicker.Stop()
+
+	analysisLoop:
+		for {
+			select {
+			case <-runCtx.Done():
+				break analysisLoop
+			case <-analysisTicker.C:
+			atomic.AddInt64(&totalIterations, 1)
+			spawnIteration(currentRPS)
+			}
+		}
+
+		// ── Phase 4: Drain ───────────────────────────────────────────────────
+		rampWg.Wait()
+
+		analysisDuration := time.Since(analysisStart)
+
+		// Compute concurrency stats.
+		concurrencyMu.Lock()
+		cSnap := make([]int64, len(concurrencySamples))
+		copy(cSnap, concurrencySamples)
+		concurrencyMu.Unlock()
+
+		var maxConc int64
+		var sumConc float64
+		for _, c := range cSnap {
+			if c > maxConc {
+				maxConc = c
+			}
+			sumConc += float64(c)
+		}
+		avgConc := 0.0
+		if len(cSnap) > 0 {
+			avgConc = sumConc / float64(len(cSnap))
+		}
+
+		// Mean think-time.
+		thinkTimeMu.Lock()
+		ttSnap := make([]time.Duration, len(thinkTimeSamples))
+		copy(ttSnap, thinkTimeSamples)
+		thinkTimeMu.Unlock()
+		var ttSum float64
+		for _, t := range ttSnap {
+			ttSum += toMS(t)
+		}
+		ttMean := 0.0
+		if len(ttSnap) > 0 {
+			ttMean = ttSum / float64(len(ttSnap))
+		}
+
+		// Override the simple rpsAchieved calculation with analysis-window measurement.
+		rpsAchieved = float64(totalIterations) / analysisDuration.Seconds()
+
+		// Patch the extra report fields via a closure over the named vars.
+		extraReportFields = func(r *cli_functions.FlowReport) {
+			r.RampUpDurationS = rampDuration.Seconds()
+			r.AnalysisDurationS = analysisDuration.Seconds()
+			r.StableRPSTarget = targetRPS
+			r.StableRPSAchieved = rpsAchieved
+			r.StableRPSMaxReached = maxReached
+			r.AvgConcurrency = avgConc
+			r.MaxConcurrency = maxConc
+			r.ThinkTimeAppliedMs = ttMean
+		}
 	}
 
 	// Build per-step reports in declaration order.
@@ -354,15 +612,9 @@ func executeFlow(
 	allLatsMu.Unlock()
 
 	successful := totalRequests - totalErrors
-	rpsAchieved := 0.0
-	if totalIterations > 0 {
-		// RPS = flow iterations per second (not individual HTTP calls per second).
-		// This matches what the user configured as requests_per_second.
-		dur := duration.Seconds()
-		if opts.TestMode {
-			dur = 1
-		}
-		rpsAchieved = float64(totalIterations) / dur
+	// In test mode compute a simple rpsAchieved; load mode overrides via extraReportFields.
+	if !opts.TestMode && totalIterations > 0 && rpsAchieved == 0 {
+		rpsAchieved = float64(totalIterations) / duration.Seconds()
 	}
 
 	errMu.Lock()
@@ -380,6 +632,7 @@ func executeFlow(
 		ErrorsByStatus:     ebs,
 		ErrorsByStep:       ebStep,
 	}
+	extraReportFields(&report)
 
 	lastCtxMu.Lock()
 	ctx := lastCtx
@@ -811,4 +1064,12 @@ func copyInt64Map(m map[string]int64) map[string]int64 {
 // expandEnv is a thin wrapper around os.ExpandEnv.
 func expandEnv(s string) string {
 	return os.ExpandEnv(s)
+}
+
+// abs64 returns the absolute value of f.
+func abs64(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
 }

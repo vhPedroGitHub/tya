@@ -33,17 +33,42 @@ type FlowContext map[string]any
 
 // FlowReport carries the metrics produced by a single flow execution.
 type FlowReport struct {
-	Name                 string       `json:"name"`
-	Type                 string       `json:"type"`
-	TotalRequests        int64        `json:"total_requests"`
-	SuccessfulRequests   int64        `json:"successful_requests"`
-	FailedRequests       int64        `json:"failed_requests"`
-	RPSAchieved          float64      `json:"rps_achieved"`
-	LatencyMS            LatencyStats `json:"latency_ms"`
-	Steps                []StepReport `json:"steps"`
-	Children             []StepReport `json:"children,omitempty"`
-	ErrorsByStatus       map[string]int64 `json:"errors_by_status,omitempty"`
-	ErrorsByStep         map[string]int64 `json:"errors_by_step,omitempty"`
+	Name               string           `json:"name"`
+	Type               string           `json:"type"`
+	TotalRequests      int64            `json:"total_requests"`
+	SuccessfulRequests int64            `json:"successful_requests"`
+	FailedRequests     int64            `json:"failed_requests"`
+	RPSAchieved        float64          `json:"rps_achieved"`
+	LatencyMS          LatencyStats     `json:"latency_ms"`
+	Steps              []StepReport     `json:"steps"`
+	Children           []StepReport     `json:"children,omitempty"`
+	ErrorsByStatus     map[string]int64 `json:"errors_by_status,omitempty"`
+	ErrorsByStep       map[string]int64 `json:"errors_by_step,omitempty"`
+
+	// Ramp-up and adaptive engine fields.
+
+	// RampUpDurationS is the wall-clock time (seconds) spent in the ramp-up
+	// phase before the plateau was declared.
+	RampUpDurationS float64 `json:"ramp_up_duration_s"`
+	// AnalysisDurationS is the wall-clock time (seconds) of the stable
+	// analysis window (duration timer starts after plateau is detected).
+	AnalysisDurationS float64 `json:"analysis_duration_s"`
+	// StableRPSTarget is the configured requests_per_second goal.
+	StableRPSTarget float64 `json:"stable_rps_target"`
+	// StableRPSAchieved is the measured RPS during the analysis window.
+	StableRPSAchieved float64 `json:"stable_rps_achieved"`
+	// StableRPSMaxReached is true when the system could not reach
+	// StableRPSTarget and ran the analysis at the highest achievable rate.
+	StableRPSMaxReached bool `json:"stable_rps_max_reached,omitempty"`
+	// AvgConcurrency is the time-averaged number of goroutines running
+	// concurrently during the analysis window.
+	AvgConcurrency float64 `json:"avg_concurrency"`
+	// MaxConcurrency is the peak number of goroutines observed concurrently
+	// during the analysis window.
+	MaxConcurrency int64 `json:"max_concurrency"`
+	// ThinkTimeAppliedMs is the mean think-time sleep (ms) applied at the
+	// end of each goroutine iteration to regulate the flow rhythm.
+	ThinkTimeAppliedMs float64 `json:"think_time_applied_ms,omitempty"`
 }
 
 // LatencyStats holds the full suite of latency percentiles (in milliseconds).

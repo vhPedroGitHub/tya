@@ -115,6 +115,59 @@ type AuthProfile struct {
 	RefreshExtract  map[string]string `yaml:"refresh_extract,omitempty"`
 }
 
+// RampUp configures the adaptive ramp-up phase for a flow.
+// All fields are optional; unset fields fall back to built-in defaults.
+type RampUp struct {
+	// InitialRPS is the starting ticker rate (default: 1).
+	InitialRPS float64 `yaml:"initial_rps,omitempty"`
+	// Factor is the multiplicative growth applied each step window (default: 1.5).
+	Factor float64 `yaml:"factor,omitempty"`
+	// StepWindow is the duration of each ramp step used to measure observed
+	// RPS before deciding whether to grow (default: "2s").
+	StepWindow string `yaml:"step_window,omitempty"`
+	// StabilityWindows is the number of consecutive windows whose measured
+	// RPS must remain within StabilityThreshold of each other before the
+	// engine declares the plateau reached and starts the analysis window
+	// (default: 3).
+	StabilityWindows int `yaml:"stability_windows,omitempty"`
+	// StabilityThreshold is the maximum relative variation (0–1) between
+	// consecutive measurement windows that is considered "stable"
+	// (default: 0.05, i.e. 5 %).
+	StabilityThreshold float64 `yaml:"stability_threshold,omitempty"`
+}
+
+// rampUpDefaults returns a RampUp with every field set to its default value.
+func rampUpDefaults() RampUp {
+	return RampUp{
+		InitialRPS:         1,
+		Factor:             1.5,
+		StepWindow:         "2s",
+		StabilityWindows:   3,
+		StabilityThreshold: 0.05,
+	}
+}
+
+// Resolve returns a copy of r with any zero-value field replaced by its default.
+func (r RampUp) Resolve() RampUp {
+	d := rampUpDefaults()
+	if r.InitialRPS <= 0 {
+		r.InitialRPS = d.InitialRPS
+	}
+	if r.Factor <= 0 {
+		r.Factor = d.Factor
+	}
+	if r.StepWindow == "" {
+		r.StepWindow = d.StepWindow
+	}
+	if r.StabilityWindows <= 0 {
+		r.StabilityWindows = d.StabilityWindows
+	}
+	if r.StabilityThreshold <= 0 {
+		r.StabilityThreshold = d.StabilityThreshold
+	}
+	return r
+}
+
 // Flow describes a named test/load flow.
 type Flow struct {
 	Name              string     `yaml:"name"`
@@ -123,6 +176,8 @@ type Flow struct {
 	RequestsPerSecond float64    `yaml:"requests_per_second,omitempty"`
 	Auth              string     `yaml:"auth,omitempty"`
 	Steps             []Step     `yaml:"steps"`
+	// RampUp controls the adaptive ramp-up phase. Omit to use defaults.
+	RampUp            *RampUp    `yaml:"ramp_up,omitempty"`
 	// DependsOn lists flow names that must complete successfully before this
 	// flow starts. TYA validates the list at startup and rejects cycles.
 	DependsOn []string   `yaml:"depends_on,omitempty"`
