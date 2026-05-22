@@ -29,6 +29,7 @@ Built with **Go** and **Cobra**.
 | [Concepts](docs/concepts.md) | Flows, steps, payload strategies, auth, execution context, config reference |
 | [Commands](docs/commands.md) | Full flag reference for `init`, `create`, and `run` |
 | [Metrics](docs/metrics.md) | JSON report format and how to interpret results |
+| [Docker Deploy](docs/docker.md) | Running TYA via Docker, GHCR image, Compose example |
 
 ---
 
