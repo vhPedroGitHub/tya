@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // GenerateExtractCode generates JS code that extracts values from an HTTP

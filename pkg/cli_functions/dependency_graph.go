@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // ValidateDependencyGraph validates the dependency graph defined by the flows'

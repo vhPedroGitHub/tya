@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // PayloadPool holds pre-generated payloads for an endpoint+method.

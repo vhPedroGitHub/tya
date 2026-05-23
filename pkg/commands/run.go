@@ -19,9 +19,9 @@ import (
 	"text/template"
 	"time"
 
-	"tya/pkg/cli_functions"
-	"tya/pkg/configyml"
-	"tya/pkg/models"
+	"github.com/vhPedroGitHub/tya/pkg/cli_functions"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/models"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -63,11 +63,11 @@ Examples:
 
 // runReport is the top-level JSON report structure written at the end of a run.
 type runReport struct {
-	RunID      string                                  `json:"run_id"`
-	StartedAt  time.Time                               `json:"started_at"`
-	FinishedAt time.Time                               `json:"finished_at"`
-	DurationS  float64                                 `json:"duration_s"`
-	Flows      map[string]cli_functions.FlowReport     `json:"flows"`
+	RunID      string                              `json:"run_id"`
+	StartedAt  time.Time                           `json:"started_at"`
+	FinishedAt time.Time                           `json:"finished_at"`
+	DurationS  float64                             `json:"duration_s"`
+	Flows      map[string]cli_functions.FlowReport `json:"flows"`
 }
 
 // runFlows is the main entry point for the run command.
@@ -154,8 +154,8 @@ func runFlows(log *zap.Logger, opts *models.RunOptions) error {
 
 	// Write a separate timeline file containing per-flow, per-second request counts.
 	type flowTimeline struct {
-		Name     string                          `json:"name"`
-		Timeline []cli_functions.TimelinePoint   `json:"timeline"`
+		Name     string                        `json:"name"`
+		Timeline []cli_functions.TimelinePoint `json:"timeline"`
 	}
 	type timelineReport struct {
 		RunID     string         `json:"run_id"`
@@ -479,8 +479,8 @@ func executeFlow(
 		forcedPlateau := false
 		forcedPlateauReason := ""
 		forcedPlateauRPS := 0.0
-		negativeResets := 0        // total negative resets observed
-		consecNegResets := 0       // consecutive negative resets (resets on drop)
+		negativeResets := 0  // total negative resets observed
+		consecNegResets := 0 // consecutive negative resets (resets on drop)
 		var rampWindows []cli_functions.RampUpWindow
 		// stableWindowRPS holds the observed RPS of every stable window,
 		// used to compute the best-N average on a forced plateau.
@@ -915,9 +915,9 @@ func executeWireFlow(
 			applyExtracts(step.Extract, res.Body, res.RequestBody, fCtx, wf.Name, bucket)
 		}
 		reports = append(reports, cli_functions.StepReport{
-			StepID:   id,
-			Requests: 1,
-			Errors:   boolToInt64(failed),
+			StepID:    id,
+			Requests:  1,
+			Errors:    boolToInt64(failed),
 			LatencyMS: computeLatencyStats([]time.Duration{res.Latency}),
 		})
 	}

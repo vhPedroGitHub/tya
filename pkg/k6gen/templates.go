@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // JSHelperFuncs returns the JavaScript helper functions embedded in every
