@@ -83,9 +83,9 @@ func generateOAuth2PasswordAuth(auth configyml.AuthProfile) string {
 	fmt.Fprintf(&b, "    const tokenRes = http.post('%s', {\n", auth.TokenURL)
 	b.WriteString("      grant_type: 'password',\n")
 	fmt.Fprintf(&b, "      client_id: '%s',\n", auth.ClientID)
-	fmt.Fprintf(&b, "      client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
-	fmt.Fprintf(&b, "      username: __ENV.%s || '%s',\n", envVarName(auth.Username), auth.Username)
-	fmt.Fprintf(&b, "      password: __ENV.%s || '%s',\n", envVarName(auth.Password), auth.Password)
+	fmt.Fprintf(&b, "      client_secret: %s,\n", envVarOrFallback(auth.ClientSecret))
+	fmt.Fprintf(&b, "      username: %s,\n", envVarOrFallback(auth.Username))
+	fmt.Fprintf(&b, "      password: %s,\n", envVarOrFallback(auth.Password))
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(&b, "      scope: '%s',\n", strings.Join(auth.Scopes, " "))
 	}
@@ -109,7 +109,7 @@ func generateOAuth2ClientCredentialsAuth(auth configyml.AuthProfile) string {
 	fmt.Fprintf(&b, "    const tokenRes = http.post('%s', {\n", auth.TokenURL)
 	b.WriteString("      grant_type: 'client_credentials',\n")
 	fmt.Fprintf(&b, "      client_id: '%s',\n", auth.ClientID)
-	fmt.Fprintf(&b, "      client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
+	fmt.Fprintf(&b, "      client_secret: %s,\n", envVarOrFallback(auth.ClientSecret))
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(&b, "      scope: '%s',\n", strings.Join(auth.Scopes, " "))
 	}
@@ -127,14 +127,14 @@ func generateOAuth2ClientCredentialsAuth(auth configyml.AuthProfile) string {
 }
 
 func generateAPIKeyAuth(auth configyml.AuthProfile) string {
-	return fmt.Sprintf("    return { auth: { api_key: __ENV.%s || '%s' } };\n",
-		envVarName(auth.Value), auth.Value)
+	return fmt.Sprintf("    return { auth: { api_key: %s } };\n",
+		envVarOrFallback(auth.Value))
 }
 
 func generateBasicAuth(auth configyml.AuthProfile) string {
-	return fmt.Sprintf("    return { auth: { username: __ENV.%s || '%s', password: __ENV.%s || '%s' } };\n",
-		envVarName(auth.Username), auth.Username,
-		envVarName(auth.Password), auth.Password)
+	return fmt.Sprintf("    return { auth: { username: %s, password: %s } };\n",
+		envVarOrFallback(auth.Username),
+		envVarOrFallback(auth.Password))
 }
 
 // GenerateAuthInject generates the JS code that injects auth into a request.
@@ -177,12 +177,12 @@ func GenerateAuthSetupWithGlobal(auth configyml.AuthProfile, baseURL string) str
 	case "oauth2_client_credentials":
 		b.WriteString(generateOAuth2ClientCredentialsAuthWithGlobal(auth))
 	case "api_key":
-		fmt.Fprintf(&b, "  return { auth: { api_key: __ENV.%s || '%s' }, globalState: globalState };\n",
-			envVarName(auth.Value), auth.Value)
+		fmt.Fprintf(&b, "  return { auth: { api_key: %s }, globalState: globalState };\n",
+			envVarOrFallback(auth.Value))
 	case "basic":
-		fmt.Fprintf(&b, "  return { auth: { username: __ENV.%s || '%s', password: __ENV.%s || '%s' }, globalState: globalState };\n",
-			envVarName(auth.Username), auth.Username,
-			envVarName(auth.Password), auth.Password)
+		fmt.Fprintf(&b, "  return { auth: { username: %s, password: %s }, globalState: globalState };\n",
+			envVarOrFallback(auth.Username),
+			envVarOrFallback(auth.Password))
 	default:
 		b.WriteString("  return { globalState: globalState };\n")
 	}
@@ -235,9 +235,9 @@ func generateOAuth2PasswordAuthWithGlobal(auth configyml.AuthProfile) string {
 	fmt.Fprintf(&b, "  const tokenRes = http.post('%s', {\n", auth.TokenURL)
 	b.WriteString("    grant_type: 'password',\n")
 	fmt.Fprintf(&b, "    client_id: '%s',\n", auth.ClientID)
-	fmt.Fprintf(&b, "    client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
-	fmt.Fprintf(&b, "    username: __ENV.%s || '%s',\n", envVarName(auth.Username), auth.Username)
-	fmt.Fprintf(&b, "    password: __ENV.%s || '%s',\n", envVarName(auth.Password), auth.Password)
+	fmt.Fprintf(&b, "    client_secret: %s,\n", envVarOrFallback(auth.ClientSecret))
+	fmt.Fprintf(&b, "    username: %s,\n", envVarOrFallback(auth.Username))
+	fmt.Fprintf(&b, "    password: %s,\n", envVarOrFallback(auth.Password))
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(&b, "    scope: '%s',\n", strings.Join(auth.Scopes, " "))
 	}
@@ -259,7 +259,7 @@ func generateOAuth2ClientCredentialsAuthWithGlobal(auth configyml.AuthProfile) s
 	fmt.Fprintf(&b, "  const tokenRes = http.post('%s', {\n", auth.TokenURL)
 	b.WriteString("    grant_type: 'client_credentials',\n")
 	fmt.Fprintf(&b, "    client_id: '%s',\n", auth.ClientID)
-	fmt.Fprintf(&b, "    client_secret: __ENV.%s || '%s',\n", envVarName(auth.ClientSecret), auth.ClientSecret)
+	fmt.Fprintf(&b, "    client_secret: %s,\n", envVarOrFallback(auth.ClientSecret))
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(&b, "    scope: '%s',\n", strings.Join(auth.Scopes, " "))
 	}
@@ -313,6 +313,20 @@ func envVarName(s string) string {
 	s = strings.TrimPrefix(s, "${")
 	s = strings.TrimSuffix(s, "}")
 	return strings.TrimSpace(s)
+}
+
+// envVarOrFallback returns a JavaScript expression for an auth value.
+//   - Pure env var: "Bearer ${TOKEN}" → template literal `Bearer ${__ENV.TOKEN || ''}`
+//   - Simple env var: "${TOKEN}"       → __ENV.TOKEN || '${TOKEN}'
+//   - No env var:    "static-key"      → __ENV. || 'static-key' (plain literal)
+//
+// For mixed literal+env var strings, a template literal is always used to
+// produce valid JS.
+func envVarOrFallback(s string) string {
+	if strings.Contains(s, "${") {
+		return envVarsToK6TemplateLiteral(s)
+	}
+	return fmt.Sprintf("__ENV.%s || '%s'", envVarName(s), s)
 }
 
 // JsString wraps s in single quotes for JavaScript.
