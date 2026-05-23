@@ -12,6 +12,7 @@ jobs:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goos: linux
@@ -38,24 +39,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Set names
-        id: names
-        run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          EXT=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
-          BIN="tya${EXT}"
-          DIR="tya-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            ARCHIVE="${DIR}.zip"
-          else
-            ARCHIVE="${DIR}.tar.gz"
-          fi
-          echo "bin=${BIN}" >> "$GITHUB_OUTPUT"
-          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
-          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          cache: true
 
       - name: Build binary
         env:
@@ -63,26 +47,28 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          mkdir -p "${{ steps.names.outputs.dir }}"
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          BIN="tya${EXT}"
+          VERSION="${{ github.event.release.tag_name }}"
+          DIR="tya-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "${DIR}"
           go build \
-            -ldflags="-s -w -X main.version=${{ steps.names.outputs.version }}" \
-            -o "${{ steps.names.outputs.dir }}/${{ steps.names.outputs.bin }}" \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o "${DIR}/${BIN}" \
             ./cmd/tya/cli
-          cp README.md "${{ steps.names.outputs.dir }}/"
-          cp docs/getting-started.md "${{ steps.names.outputs.dir }}/"
-
-      - name: Create archive
-        run: |
+          cp README.md "${DIR}/"
+          cp docs/getting-started.md "${DIR}/"
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            zip -r "${{ steps.names.outputs.archive }}" "${{ steps.names.outputs.dir }}"
+            zip -r "tya-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip" "${DIR}"
           else
-            tar -czf "${{ steps.names.outputs.archive }}" "${{ steps.names.outputs.dir }}"
+            tar -czf "tya-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "${DIR}"
           fi
 
       - name: Upload binary asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.names.outputs.archive }}
+          files: tya-${{ github.event.release.tag_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
 
   package-scripts:
     name: Package Python scripts
