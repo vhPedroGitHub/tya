@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // GenerateAuthSetup generates the k6 setup() function body that acquires

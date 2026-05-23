@@ -2,6 +2,7 @@
 bin/
 *.exe
 *.out
+tya
 
 # Go build cache
 *.test

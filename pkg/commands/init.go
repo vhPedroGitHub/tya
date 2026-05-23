@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"tya/pkg/cli_functions"
-	"tya/pkg/configyml"
-	"tya/pkg/models"
+	"github.com/vhPedroGitHub/tya/pkg/cli_functions"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/models"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 
 	"go.uber.org/zap"
 )

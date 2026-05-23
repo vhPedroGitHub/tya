@@ -5,10 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"tya/pkg/cli_functions"
-	"tya/pkg/configyml"
-	"tya/pkg/k6gen"
-	"tya/pkg/models"
+	"github.com/vhPedroGitHub/tya/pkg/cli_functions"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
+
+	"github.com/vhPedroGitHub/tya/pkg/k6gen"
+	"github.com/vhPedroGitHub/tya/pkg/models"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"

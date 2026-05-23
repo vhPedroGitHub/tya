@@ -11,7 +11,7 @@ package cli_functions
 import (
 	"sync"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 
 	"go.uber.org/zap"
 )
@@ -138,20 +138,20 @@ type FlowContext map[string]any
 
 // FlowReport carries the metrics produced by a single flow execution.
 type FlowReport struct {
-	Name               string           `json:"name"`
-	Type               string           `json:"type"`
-	TotalRequests      int64            `json:"total_requests"`
-	SuccessfulRequests int64            `json:"successful_requests"`
-	FailedRequests     int64            `json:"failed_requests"`
+	Name               string `json:"name"`
+	Type               string `json:"type"`
+	TotalRequests      int64  `json:"total_requests"`
+	SuccessfulRequests int64  `json:"successful_requests"`
+	FailedRequests     int64  `json:"failed_requests"`
 	// RPSAchieved is the measured HTTP calls per second during the analysis window.
 	RPSAchieved float64 `json:"rps_achieved"`
 	// IterationsPerSecond is the measured flow iterations per second (= RPSAchieved / N steps).
-	IterationsPerSecond float64 `json:"iterations_per_second,omitempty"`
-	LatencyMS          LatencyStats     `json:"latency_ms"`
-	Steps              []StepReport     `json:"steps"`
-	Children           []StepReport     `json:"children,omitempty"`
-	ErrorsByStatus     map[string]int64 `json:"errors_by_status,omitempty"`
-	ErrorsByStep       map[string]int64 `json:"errors_by_step,omitempty"`
+	IterationsPerSecond float64          `json:"iterations_per_second,omitempty"`
+	LatencyMS           LatencyStats     `json:"latency_ms"`
+	Steps               []StepReport     `json:"steps"`
+	Children            []StepReport     `json:"children,omitempty"`
+	ErrorsByStatus      map[string]int64 `json:"errors_by_status,omitempty"`
+	ErrorsByStep        map[string]int64 `json:"errors_by_step,omitempty"`
 
 	// Ramp-up and adaptive engine fields.
 
@@ -224,10 +224,10 @@ type LatencyStats struct {
 
 // StepReport holds per-step metrics for a single flow run.
 type StepReport struct {
-	StepID     string       `json:"step_id"`
-	Requests   int64        `json:"requests"`
-	Errors     int64        `json:"errors"`
-	LatencyMS  LatencyStats `json:"latency_ms"`
+	StepID    string       `json:"step_id"`
+	Requests  int64        `json:"requests"`
+	Errors    int64        `json:"errors"`
+	LatencyMS LatencyStats `json:"latency_ms"`
 }
 
 // RampUpWindow records the observed metrics for a single ramp-up step window.

@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"tya/pkg/configyml"
+	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
 // GenerateStepCode generates the full k6 JavaScript code for a single step
