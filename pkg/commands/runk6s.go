@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -108,92 +109,122 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 	)
 
 	// globalState accumulates values emitted by TYA_GLOBAL: sentinels across flows.
-	// Structure: map[flowName]map[key]any for scalar values,
-	//            map[flowName]map[key][]any for list values (appended across VU iterations).
-	globalScalars := map[string]map[string]any{}
-	globalLists := map[string]map[string][]any{}
-
-	// Execute each flow in order
-	for _, fc := range order {
-		scriptPath := filepath.Join(opts.Dir, fc.File)
-		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			log.Warn("script not found, skipping", zap.String("file", fc.File))
-			continue
-		}
-
-		reportPath := filepath.Join(reportsDir, fc.Name+"-summary.json")
-		jsonReportPath := filepath.Join(reportsDir, fc.Name+".json")
-
-		log.Info("running flow", zap.String("flow", fc.Name), zap.String("file", fc.File))
-
-		args := []string{
-			"run",
-			"--log-format", "json",
-			"--summary-export", reportPath,
-			"--out", "json=" + jsonReportPath,
-			"-e", "BASE_URL=" + baseURL,
-		}
-
-		// Add extra env vars
-		for k, v := range opts.Env {
-			args = append(args, "-e", k+"="+v)
-		}
-
-		// Pass accumulated global state to this flow
-		if len(globalScalars) > 0 || len(globalLists) > 0 {
-			// Build the combined globalState object that setup() will parse
-			// Shape: { "flow-name": { "key": value, "key_list": [v1, v2, ...] } }
-			combined := map[string]map[string]any{}
-			for flowName, keys := range globalScalars {
-				if combined[flowName] == nil {
-					combined[flowName] = map[string]any{}
-				}
-				for k, v := range keys {
-					combined[flowName][k] = v
-				}
-			}
-			for flowName, keys := range globalLists {
-				if combined[flowName] == nil {
-					combined[flowName] = map[string]any{}
-				}
-				for k, v := range keys {
-					combined[flowName][k] = v
-				}
-			}
-		stateJSON, err := json.Marshal(combined)
-		if err == nil {
-			tmpFile, tmpErr := os.CreateTemp("", "tya-global-state-*.json")
-			if tmpErr == nil {
-				_, _ = tmpFile.Write(stateJSON)
-				_ = tmpFile.Close()
-				args = append(args, "-e", "TYA_GLOBAL_STATE_FILE="+tmpFile.Name())
-				defer os.Remove(tmpFile.Name()) //nolint:errcheck
-			} else {
-				// Fallback to env var if temp file creation fails
-				args = append(args, "-e", "TYA_GLOBAL_STATE="+string(stateJSON))
-			}
-		}
-		}
-
-		args = append(args, scriptPath)
-
-		cmd := exec.Command("k6", args...)
-		// Capture stderr so we can parse TYA_GLOBAL: sentinels (k6 console.log → stderr),
-		// while also streaming output to the user's terminal.
-		var stderrBuf bytes.Buffer
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
-
-		if err := cmd.Run(); err != nil {
-			log.Warn("k6 flow had errors", zap.String("flow", fc.Name), zap.Error(err))
-			// Continue with next flow even if this one failed
-		} else {
-			log.Info("flow completed", zap.String("flow", fc.Name))
-		}
-
-		// Parse TYA_GLOBAL: sentinels from captured stderr output
-		parseGlobalSentinels(stderrBuf.String(), globalScalars, globalLists)
+	// Protected by a mutex since parallel flows may emit sentinels concurrently.
+	type globalState struct {
+		mu      sync.Mutex
+		scalars map[string]map[string]any
+		lists   map[string]map[string][]any
 	}
+	gs := &globalState{
+		scalars: map[string]map[string]any{},
+		lists:   map[string]map[string][]any{},
+	}
+
+	// One done channel per flow — closed when the flow finishes.
+	done := make(map[string]chan struct{}, len(order))
+	for _, fc := range order {
+		done[fc.Name] = make(chan struct{})
+	}
+
+	var wg sync.WaitGroup
+
+	for _, fc := range order {
+		fc := fc // capture for goroutine
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Block until every dependency signals done.
+			for _, dep := range fc.DependsOn {
+				if ch, ok := done[dep]; ok {
+					<-ch
+				}
+			}
+
+			scriptPath := filepath.Join(opts.Dir, fc.File)
+			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+				log.Warn("script not found, skipping", zap.String("file", fc.File))
+				close(done[fc.Name])
+				return
+			}
+
+			reportPath := filepath.Join(reportsDir, fc.Name+"-summary.json")
+			jsonReportPath := filepath.Join(reportsDir, fc.Name+".json")
+
+			log.Info("running flow", zap.String("flow", fc.Name), zap.String("file", fc.File))
+
+			args := []string{
+				"run",
+				"--log-format", "json",
+				"--summary-export", reportPath,
+				"--out", "json=" + jsonReportPath,
+				"-e", "BASE_URL=" + baseURL,
+			}
+
+			// Add extra env vars
+			for k, v := range opts.Env {
+				args = append(args, "-e", k+"="+v)
+			}
+
+			// Pass accumulated global state to this flow
+			gs.mu.Lock()
+			if len(gs.scalars) > 0 || len(gs.lists) > 0 {
+				combined := map[string]map[string]any{}
+				for flowName, keys := range gs.scalars {
+					if combined[flowName] == nil {
+						combined[flowName] = map[string]any{}
+					}
+					for k, v := range keys {
+						combined[flowName][k] = v
+					}
+				}
+				for flowName, keys := range gs.lists {
+					if combined[flowName] == nil {
+						combined[flowName] = map[string]any{}
+					}
+					for k, v := range keys {
+						combined[flowName][k] = v
+					}
+				}
+				stateJSON, err := json.Marshal(combined)
+				if err == nil {
+					tmpFile, tmpErr := os.CreateTemp("", "tya-global-state-*.json")
+					if tmpErr == nil {
+						_, _ = tmpFile.Write(stateJSON)
+						_ = tmpFile.Close()
+						args = append(args, "-e", "TYA_GLOBAL_STATE_FILE="+tmpFile.Name())
+						defer os.Remove(tmpFile.Name()) //nolint:errcheck
+					} else {
+						args = append(args, "-e", "TYA_GLOBAL_STATE="+string(stateJSON))
+					}
+				}
+			}
+			gs.mu.Unlock()
+
+			args = append(args, scriptPath)
+
+			cmd := exec.Command("k6", args...)
+			var stderrBuf bytes.Buffer
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+			if err := cmd.Run(); err != nil {
+				log.Warn("k6 flow had errors", zap.String("flow", fc.Name), zap.Error(err))
+			} else {
+				log.Info("flow completed", zap.String("flow", fc.Name))
+			}
+
+			// Parse TYA_GLOBAL: sentinels from captured stderr output
+			gs.mu.Lock()
+			parseGlobalSentinels(stderrBuf.String(), gs.scalars, gs.lists)
+			gs.mu.Unlock()
+
+			// Signal dependents
+			close(done[fc.Name])
+		}()
+	}
+
+	wg.Wait()
 
 	fmt.Printf("\nReports written to %s/\n", reportsDir)
 
