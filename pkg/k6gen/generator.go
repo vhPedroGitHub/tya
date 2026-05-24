@@ -92,9 +92,11 @@ func generateFlowScript(flow configyml.Flow, baseURL string, authMap map[string]
 	// Setup function
 	b.WriteString("export function setup() {\n")
 	b.WriteString("  const baseURL = __ENV.BASE_URL || " + JsString(baseURL) + ";\n")
-	// Inject global state from previous flows (written by runk6s into TYA_GLOBAL_STATE env var)
+	// Inject global state from previous flows (written by runk6s into TYA_GLOBAL_STATE_FILE or TYA_GLOBAL_STATE env var)
 	b.WriteString("  let globalState = {};\n")
-	b.WriteString("  if (__ENV.TYA_GLOBAL_STATE) {\n")
+	b.WriteString("  if (__ENV.TYA_GLOBAL_STATE_FILE) {\n")
+	b.WriteString("    try { globalState = JSON.parse(open(__ENV.TYA_GLOBAL_STATE_FILE)); } catch(_) {}\n")
+	b.WriteString("  } else if (__ENV.TYA_GLOBAL_STATE) {\n")
 	b.WriteString("    try { globalState = JSON.parse(__ENV.TYA_GLOBAL_STATE); } catch(_) {}\n")
 	b.WriteString("  }\n")
 

@@ -160,10 +160,19 @@ func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {
 					combined[flowName][k] = v
 				}
 			}
-			stateJSON, err := json.Marshal(combined)
-			if err == nil {
+		stateJSON, err := json.Marshal(combined)
+		if err == nil {
+			tmpFile, tmpErr := os.CreateTemp("", "tya-global-state-*.json")
+			if tmpErr == nil {
+				_, _ = tmpFile.Write(stateJSON)
+				_ = tmpFile.Close()
+				args = append(args, "-e", "TYA_GLOBAL_STATE_FILE="+tmpFile.Name())
+				defer os.Remove(tmpFile.Name()) //nolint:errcheck
+			} else {
+				// Fallback to env var if temp file creation fails
 				args = append(args, "-e", "TYA_GLOBAL_STATE="+string(stateJSON))
 			}
+		}
 		}
 
 		args = append(args, scriptPath)
