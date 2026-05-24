@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +16,29 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
+
+// k6Warning is printed before any k6-related command executes.
+const k6Warning = `
+WARNING: The k6 commands (genk6 / runk6s) are experimental and known to
+contain bugs. Results may be inaccurate or scripts may fail at runtime.
+Use 'tya run' for production load testing.
+
+Do you want to continue? [Y/N]: `
+
+// confirmK6Warning prints the k6 warning to stdout and reads a single line
+// from stdin. It returns an error (which aborts the command) if the user does
+// not confirm with 'y' or 'Y'.
+func confirmK6Warning() error {
+	fmt.Print(k6Warning)
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		answer := strings.TrimSpace(scanner.Text())
+		if strings.EqualFold(answer, "y") {
+			return nil
+		}
+	}
+	return fmt.Errorf("aborted by user")
+}
 
 // NewGenK6Cmd returns the cobra command for `tya genk6`.
 func NewGenK6Cmd(log *zap.Logger) *cobra.Command {
@@ -32,6 +57,9 @@ Examples:
   tya genk6 config-run.yml --api-dir ./api`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmK6Warning(); err != nil {
+				return err
+			}
 			opts.ConfigFile = args[0]
 			return runGenK6(log, opts)
 		},

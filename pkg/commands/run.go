@@ -471,6 +471,33 @@ func executeFlow(
 
 		// ── Phase 1 + 2: Ramp-up and plateau detection ──────────────────────
 
+		// Live RPS monitor for ramp-up phase: logs actual HTTP calls/s every second.
+		rampMonitorCtx, rampMonitorCancel := context.WithCancel(context.Background())
+		rampMonitorDone := make(chan struct{})
+		go func() {
+			defer close(rampMonitorDone)
+			monTicker := time.NewTicker(time.Second)
+			defer monTicker.Stop()
+			prevIter := atomic.LoadInt64(&totalIterations)
+			for {
+				select {
+				case <-rampMonitorCtx.Done():
+					return
+				case <-monTicker.C:
+					curIter := atomic.LoadInt64(&totalIterations)
+					deltaIter := curIter - prevIter
+					liveRPS := float64(deltaIter) * nSteps
+					prevIter = curIter
+					log.Info("live_rps",
+						zap.String("flow", flow.Name),
+						zap.String("phase", "ramp_up"),
+						zap.Float64("rps", liveRPS),
+						zap.Float64("target_rps", targetRPS),
+					)
+				}
+			}
+		}()
+
 		rampStart := time.Now()
 		stableWindows := 0
 		prevWindowRPS := 0.0
@@ -657,6 +684,9 @@ func executeFlow(
 			}
 		}
 
+		rampMonitorCancel()
+		<-rampMonitorDone
+
 		rampDuration := time.Since(rampStart)
 
 		// Reset analysis-window metrics.
@@ -722,11 +752,18 @@ func executeFlow(
 				case <-secTicker.C:
 					curReq := atomic.LoadInt64(&totalRequests)
 					curErr := atomic.LoadInt64(&totalErrors)
-					pt := cli_functions.TimelinePoint{
-						SecondOffset: sec,
-						Requests:     curReq - prevReq,
-						Errors:       curErr - prevErr,
-					}
+				pt := cli_functions.TimelinePoint{
+					SecondOffset: sec,
+					Requests:     curReq - prevReq,
+					Errors:       curErr - prevErr,
+				}
+				log.Info("live_rps",
+					zap.String("flow", flow.Name),
+					zap.String("phase", "analysis"),
+					zap.Float64("rps", float64(curReq-prevReq)),
+					zap.Float64("target_rps", targetRPS),
+					zap.Int64("errors_this_sec", curErr-prevErr),
+				)
 					timelineMu.Lock()
 					timelinePoints = append(timelinePoints, pt)
 					timelineMu.Unlock()
@@ -1068,6 +1105,31 @@ func executeIterateFlow(
 		}
 		close(itemCh)
 
+		// Live RPS monitor: logs actual HTTP calls/s every second during iterate load run.
+		iterMonitorCtx, iterMonitorCancel := context.WithCancel(context.Background())
+		iterMonitorDone := make(chan struct{})
+		go func() {
+			defer close(iterMonitorDone)
+			monTicker := time.NewTicker(time.Second)
+			defer monTicker.Stop()
+			prevReq := atomic.LoadInt64(&totalRequests)
+			for {
+				select {
+				case <-iterMonitorCtx.Done():
+					return
+				case <-monTicker.C:
+					curReq := atomic.LoadInt64(&totalRequests)
+					log.Info("live_rps",
+						zap.String("flow", flow.Name),
+						zap.String("phase", "iterate"),
+						zap.Float64("rps", float64(curReq-prevReq)),
+						zap.Float64("target_rps", rps),
+					)
+					prevReq = curReq
+				}
+			}
+		}()
+
 		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
 
@@ -1129,6 +1191,8 @@ func executeIterateFlow(
 		}
 
 		// Wait for all in-flight goroutines to finish.
+		iterMonitorCancel()
+		<-iterMonitorDone
 		iterWg.Wait()
 	}
 

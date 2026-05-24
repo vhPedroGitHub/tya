@@ -34,6 +34,9 @@ Examples:
   tya runk6s config-run-k6/ --env TEST_USER=admin --env TEST_PASS=secret`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmK6Warning(); err != nil {
+				return err
+			}
 			opts.Dir = args[0]
 			return runRunK6S(log, opts)
 		},
