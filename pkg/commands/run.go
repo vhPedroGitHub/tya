@@ -418,6 +418,7 @@ func executeFlow(
 				// semaphore full — drop this tick to avoid runaway goroutines
 				return
 			}
+			atomic.AddInt64(&totalIterations, 1)
 			cur := atomic.AddInt64(&activeConcurrency, 1)
 			sampleConcurrency(cur)
 			rampWg.Add(1)
@@ -547,7 +548,6 @@ func executeFlow(
 					ticker.Stop()
 					break rampWindow
 				case <-ticker.C:
-					atomic.AddInt64(&totalIterations, 1)
 					spawnIteration(currentRPS)
 				}
 			}
@@ -653,16 +653,7 @@ func executeFlow(
 			allLatsMu.Unlock()
 			if len(latSnap) > 0 {
 				stats := computeLatencyStats(latSnap)
-				p95IterS := (stats.P95 / 1000.0) * nSteps
-				iterRPS := currentRPS / nSteps
-				newCap := int(iterRPS*p95IterS*1.5) + 1
-				if newCap < 8 {
-					newCap = 8
-				}
-				if newCap > semCap {
-					semCap = newCap
-					sem = make(chan struct{}, semCap)
-				}
+				_ = stats // p95 available for future dynamic semaphore tuning
 			}
 		}
 
@@ -752,7 +743,6 @@ func executeFlow(
 			case <-runCtx.Done():
 				break analysisLoop
 			case <-analysisTicker.C:
-				atomic.AddInt64(&totalIterations, 1)
 				spawnIteration(currentRPS)
 			}
 		}

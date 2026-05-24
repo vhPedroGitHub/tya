@@ -171,6 +171,17 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 		rps = 1
 	}
 
+	nSteps := float64(len(flow.Steps))
+	if nSteps < 1 {
+		nSteps = 1
+	}
+	// k6 startRate/target are iterations/s, not HTTP calls/s.
+	// Each iteration runs all steps, so iterRPS = rps / nSteps.
+	iterRPS := int(math.Ceil(rps / nSteps))
+	if iterRPS < 1 {
+		iterRPS = 1
+	}
+
 	rampUp := flow.RampUp
 	if rampUp != nil {
 		rampUp = rampCfg(rampUp)
@@ -178,7 +189,7 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 
 	b.WriteString("    scenario: {\n")
 	b.WriteString("      executor: 'ramping-arrival-rate',\n")
-	fmt.Fprintf(&b, "      startRate: %d,\n", int(rps))
+	fmt.Fprintf(&b, "      startRate: %d,\n", iterRPS)
 	b.WriteString("      timeUnit: '1s',\n")
 	b.WriteString("      preAllocatedVUs: 10,\n")
 	b.WriteString("      maxVUs: 200,\n")
@@ -203,15 +214,15 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 			if next >= rps {
 				next = rps
 			}
-			fmt.Fprintf(&b, "        { target: %d, duration: '%s' },\n", int(next), stepWin)
+			fmt.Fprintf(&b, "        { target: %d, duration: '%s' },\n", int(math.Ceil(next/nSteps)), stepWin)
 			current = next
 		}
 		// Plateau at target for stability windows
-		fmt.Fprintf(&b, "        { target: %d, duration: '%ds' },\n", int(rps), stabWindows*2)
+		fmt.Fprintf(&b, "        { target: %d, duration: '%ds' },\n", iterRPS, stabWindows*2)
 	}
 
 	// Analysis window
-	fmt.Fprintf(&b, "        { target: %d, duration: '%s' },\n", int(rps), duration)
+	fmt.Fprintf(&b, "        { target: %d, duration: '%s' },\n", iterRPS, duration)
 
 	// Drain
 	b.WriteString("        { target: 0, duration: '5s' },\n")
