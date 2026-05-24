@@ -81,6 +81,9 @@ function renderTemplate(tmpl, ctx) {
   return tmpl.replace(/\{\{\s*\.(\w+(?:\.\w+)*)\s*\}\}/g, (_, key) => {
     const val = navigate(ctx, key);
     return val !== null && val !== undefined ? val : '';
+  }).replace(/\{\{\s*index\s+\.(\w+)\s+"([^"]+)"\s*\}\}/g, (_, v, k) => {
+    const obj = ctx[v];
+    return obj && obj[k] !== undefined ? obj[k] : '';
   }).replace(/\{\{\s*(uuid)\s*\}\}/g, () => uuidv4())
     .replace(/\{\{\s*randomDigits\s+(\d+)\s*\}\}/g, (_, n) => randomDigits(parseInt(n)))
     .replace(/\{\{\s*randomInt\s*\}\}/g, () => randomInt())
@@ -246,6 +249,18 @@ func templateExprToJS(expr string) string {
 		parts := parseQuotedArgs(expr[len("globalGet "):])
 		if len(parts) == 2 {
 			return fmt.Sprintf("navigate(ctx['__global__'], '%s.%s')", parts[0], parts[1])
+		}
+	}
+	// {{ index .var "key" }} → ctx['var']['key']
+	// {{ index .global "flow" "key" }} → navigate(ctx['__global__'], 'flow.key')
+	if strings.HasPrefix(expr, "index ") {
+		args := parseQuotedArgs(strings.TrimSpace(expr[len("index "):]))
+		if len(args) == 2 {
+			varName := strings.TrimPrefix(args[0], ".")
+			return fmt.Sprintf("ctx['%s']['%s']", varName, args[1])
+		}
+		if len(args) == 3 {
+			return fmt.Sprintf("navigate(ctx['__global__'], '%s.%s')", args[1], args[2])
 		}
 	}
 	// Fallback: return as-is
