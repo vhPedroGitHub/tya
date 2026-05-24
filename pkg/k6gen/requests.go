@@ -2,7 +2,6 @@ package k6gen
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/vhPedroGitHub/tya/pkg/configyml"
@@ -144,23 +143,15 @@ func GenerateScenarioConfig(flow configyml.Flow) string {
 	}
 
 	if flow.Type == "iterate" {
-		// Iterate flows: constant-arrival-rate executor.
-		// RPS = HTTP calls/s. Arrival rate for the executor = iterations/s = ceil(rps / nSteps).
-		nSteps := float64(len(flow.Steps))
-		if nSteps < 1 {
-			nSteps = 1
-		}
-		iterRPS := math.Ceil(rps / nSteps)
-		if iterRPS < 1 {
-			iterRPS = 1
-		}
+		// Iterate flows: per-vu-iterations executor.
+		// Each VU processes items sequentially via __ITER index. When __ITER >= items.length,
+		// the iteration returns early (Option A: stop when list exhausted, no looping).
+		// A large iteration count lets the VU process all items; early return handles the rest.
 		b.WriteString("    scenario: {\n")
-		b.WriteString("      executor: 'constant-arrival-rate',\n")
-		fmt.Fprintf(&b, "      rate: %d,\n", int(iterRPS))
-		b.WriteString("      timeUnit: '1s',\n")
-		b.WriteString("      preAllocatedVUs: 10,\n")
-		b.WriteString("      maxVUs: 200,\n")
-		fmt.Fprintf(&b, "      duration: '%s',\n", duration)
+		b.WriteString("      executor: 'per-vu-iterations',\n")
+		b.WriteString("      iterations: 100000,\n")
+		b.WriteString("      vus: 1,\n")
+		fmt.Fprintf(&b, "      maxDuration: '%s',\n", duration)
 		b.WriteString("    },\n")
 		return b.String()
 	}
