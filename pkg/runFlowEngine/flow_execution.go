@@ -534,6 +534,7 @@ func ExecuteFlow(
 
 		analysisStart := time.Now()
 		runCtx, cancel := context.WithTimeout(context.Background(), duration)
+		analyCtx, analyCtxCancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		analysisTicker := time.NewTicker(tickInterval(currentRPS))
@@ -584,9 +585,10 @@ func ExecuteFlow(
 		for {
 			select {
 			case <-runCtx.Done():
+				analyCtxCancel()
 				break analysisLoop
 			case <-analysisTicker.C:
-				spawnIteration(currentRPS)
+				spawnIteration(analyCtx, currentRPS)
 			}
 		}
 
