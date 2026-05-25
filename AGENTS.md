@@ -718,3 +718,10 @@ flows:
         method: DELETE
 ```
 
+## App demo
+
+now save all request in a historial, kept for 5 seconds.
+
+```bash
+bash -c 'while true; do curl -s http://localhost:8080/rps; echo; sleep 1; done'
+```

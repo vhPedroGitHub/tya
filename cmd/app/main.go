@@ -42,6 +42,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -206,16 +207,27 @@ type app struct {
 	cfg config
 	db  *sql.DB
 	mux *http.ServeMux
+	rps *rpsTracker
 }
 
 func newApp(cfg config, db *sql.DB) *app {
 	a := &app{cfg: cfg, db: db, mux: http.NewServeMux()}
+	a.rps = newRPSTracker()
 	a.routes()
 	return a
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	a.mux.ServeHTTP(w, r)
+	// Don't count the rps endpoint itself to avoid polluting the metric.
+	if a.rps != nil && r.URL.Path != "/rps" {
+		a.rps.Inc()
+	}
+	// Wrap ResponseWriter to capture status and size for logging.
+	lrw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+	start := time.Now()
+	a.mux.ServeHTTP(lrw, r)
+	dur := time.Since(start)
+	log.Printf("%s %s %d %dB %s", r.Method, r.URL.Path, lrw.status, lrw.written, dur)
 }
 
 func (a *app) routes() {
@@ -231,6 +243,78 @@ func (a *app) routes() {
 	a.mux.HandleFunc("PUT /persons/{id}", a.protected(a.handleReplacePerson))
 	a.mux.HandleFunc("PATCH /persons/{id}", a.protected(a.handleUpdatePerson))
 	a.mux.HandleFunc("DELETE /persons/{id}", a.protected(a.handleDeletePerson))
+
+	// RPS metrics endpoint (returns requests in the last 5 seconds)
+	a.mux.HandleFunc("/rps", a.handleRPS)
+}
+
+// rpsTracker keeps a 5-second sliding window of request counts.
+type rpsTracker struct {
+	mu     sync.Mutex
+	counts [5]int64
+	ts     [5]int64 // unix seconds for each bucket
+}
+
+func newRPSTracker() *rpsTracker { return &rpsTracker{} }
+
+func (t *rpsTracker) Inc() {
+	now := time.Now().Unix()
+	idx := int(now % int64(len(t.counts)))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ts[idx] != now {
+		t.counts[idx] = 0
+		t.ts[idx] = now
+	}
+	t.counts[idx]++
+}
+
+// TotalLast5s returns the total number of requests seen in the last 5 seconds.
+func (t *rpsTracker) TotalLast5s() int64 {
+	now := time.Now().Unix()
+	total := int64(0)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := 0; i < len(t.counts); i++ {
+		if now-t.ts[i] < int64(len(t.counts)) {
+			total += t.counts[i]
+		}
+	}
+	return total
+}
+
+// AverageLast5s returns the average requests per second over the last 5 seconds.
+func (t *rpsTracker) AverageLast5s() float64 {
+	total := t.TotalLast5s()
+	return float64(total) / float64(len(t.counts))
+}
+
+func (a *app) handleRPS(w http.ResponseWriter, r *http.Request) {
+	if a.rps == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"requests_last_5s": 0, "rps": 0.0})
+		return
+	}
+	total := a.rps.TotalLast5s()
+	avg := a.rps.AverageLast5s()
+	writeJSON(w, http.StatusOK, map[string]any{"requests_last_5s": total, "rps": avg})
+}
+
+// loggingResponseWriter wraps http.ResponseWriter to capture response status and size.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status  int
+	written int
+}
+
+func (l *loggingResponseWriter) WriteHeader(code int) {
+	l.status = code
+	l.ResponseWriter.WriteHeader(code)
+}
+
+func (l *loggingResponseWriter) Write(b []byte) (int, error) {
+	n, err := l.ResponseWriter.Write(b)
+	l.written += n
+	return n, err
 }
 
 // ---------------------------------------------------------------------------

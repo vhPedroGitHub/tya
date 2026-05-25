@@ -34,7 +34,14 @@ flows:
       - id: create-person
         endpoint: /persons
         method: POST
-        payload_strategy: random
+        payload_strategy: template
+        payload_template: |
+          {
+            "first_name": "User {{ randomDigits 4 }}",
+            "last_name": "Test{{ randomDigits 3 }}",
+            "email": "user{{ randomInt64 }}@example.com",
+            "phone": "+1-555-{{ randomDigits 4 }}"
+          }
         extract:
           - field: response.body.id
             as: person_id
@@ -48,7 +55,7 @@ flows:
         method: PATCH
         payload_strategy: template
         payload_template: |
-          { "phone": "+1-555-9999" }
+          { "phone": "+1-555-{{ randomDigits 4 }}" }
 
       - id: delete-person
         endpoint: /persons/{{ .person_id }}

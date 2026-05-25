@@ -111,7 +111,7 @@ func ExecuteFlow(
 		iterOK := true
 		for _, step := range flow.Steps {
 			id := stepID(step)
-			res := executeStep(log, step, fCtx, authMap[flow.Auth])
+			res := executeStep(log, step, fCtx, authMap[flow.Auth], context.Background())
 			recordResult(id, res)
 			if res.Err != nil || res.StatusCode >= 400 {
 				iterOK = false
@@ -174,10 +174,7 @@ func ExecuteFlow(
 
 		// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
 		// Initial cap based on targetRPS (HTTP calls/s) converted to iterations/s.
-		semCap := int((targetRPS/nSteps)*10) + 1
-		if semCap < 8 {
-			semCap = 8
-		}
+		semCap := max(int((targetRPS/nSteps)*10)+1, 8)
 		sem := make(chan struct{}, semCap)
 
 		// concurrency tracking
@@ -193,11 +190,16 @@ func ExecuteFlow(
 
 		var rampWg sync.WaitGroup
 
-		spawnIteration := func(ctx context.Context, launchRPS float64) {
+		spawnIteration := func(ctx context.Context, winWg *sync.WaitGroup) {
+			if winWg != nil {
+				winWg.Add(1)
+			}
 			select {
 			case sem <- struct{}{}:
 			default:
 				// semaphore full — drop this tick to avoid runaway goroutines
+				winWg.Done()
+
 				log.Warn("semaphore-full",
 					zap.Int("semaphorecap", cap(sem)),
 				)
@@ -211,6 +213,9 @@ func ExecuteFlow(
 				defer func() {
 					<-sem
 					atomic.AddInt64(&activeConcurrency, -1)
+					if winWg != nil {
+						winWg.Done()
+					}
 					rampWg.Done()
 				}()
 
@@ -228,7 +233,6 @@ func ExecuteFlow(
 						acquireToken(log, auth, baseURL, fCtx)
 					}
 				}
-				iterStart := time.Now()
 				iterOK := true
 				for _, step := range flow.Steps {
 					// Cancelar entre steps si el contexto expiró
@@ -239,7 +243,7 @@ func ExecuteFlow(
 					}
 
 					id := stepID(step)
-					res := executeStep(log, step, fCtx, authMap[flow.Auth])
+					res := executeStep(log, step, fCtx, authMap[flow.Auth], ctx)
 					recordResult(id, res)
 					if res.Err != nil || res.StatusCode >= 400 {
 						iterOK = false
@@ -253,19 +257,8 @@ func ExecuteFlow(
 					lastCtxMu.Unlock()
 				}
 
-				// Think-time: sleep the remainder of the target iteration duration
-				// so that this goroutine self-regulates its pace.
-				// targetIterDur = nSteps / launchRPS  (seconds per iteration
-				// when the goal is launchRPS HTTP calls/s with nSteps steps).
-				targetIterDur := time.Duration(float64(time.Second) * nSteps / launchRPS)
-				elapsed := time.Since(iterStart)
 				atomic.AddInt64(&totalIterations, 1)
-				if thinkTime := targetIterDur - elapsed; thinkTime > 0 {
-					thinkTimeMu.Lock()
-					thinkTimeSamples = append(thinkTimeSamples, thinkTime)
-					thinkTimeMu.Unlock()
-					time.Sleep(thinkTime)
-				}
+				fmt.Printf("Total iteration = %d\n", totalIterations)
 			}()
 		}
 
@@ -341,9 +334,11 @@ func ExecuteFlow(
 			windowItersBefore := atomic.LoadInt64(&totalIterations)
 
 			winCtx, winCancel := context.WithCancel(context.Background())
+			var winWg sync.WaitGroup
 
 			ticker := time.NewTicker(tickInterval(currentRPS))
 			winTimer := time.NewTimer(stepWin)
+			fmt.Printf("new ticker: %f , windows timer: %f\n", float64(time.Second)*nSteps/currentRPS, stepWin.Seconds())
 		rampWindow:
 			for {
 				select {
@@ -352,14 +347,28 @@ func ExecuteFlow(
 					winCancel()
 					break rampWindow
 				case <-ticker.C:
-					spawnIteration(winCtx, currentRPS)
+					fmt.Printf("total concurrency now: %d\n", activeConcurrency)
+					spawnIteration(winCtx, &winWg)
 				}
 			}
 			winTimer.Stop()
 
+			// Wait for this window's goroutines to finish (they should cancel quickly
+			// because winCancel() signalled their context). This ensures windowRPS
+			// measures completed iterations only.
+			winWg.Wait()
+
 			windowIters := atomic.LoadInt64(&totalIterations) - windowItersBefore
 			// Convert iterations to HTTP calls/s for comparison against targetRPS.
 			windowRPS := float64(windowIters) * nSteps / stepWin.Seconds()
+
+			log.Info("ramp-up: window result",
+				zap.Int("window", winIdx),
+				zap.Int("window_iteration_before", int(windowItersBefore)),
+				zap.Int("total_iterations", int(totalIterations)),
+				zap.Int("window_iters", int(windowIters)),
+				zap.Float64("window_rps", windowRPS),
+			)
 
 			// ── Stability and negative-reset analysis ──────────────────────
 			variation := 0.0
@@ -412,6 +421,10 @@ func ExecuteFlow(
 				zap.Bool("stable", isStable),
 				zap.Bool("negative_reset", isNegReset),
 				zap.Int("consecutive_negative_resets", consecNegResets),
+				zap.Int("stable_windows", stableWindows),
+				zap.Int("total_negative_resets", negativeResets),
+				zap.Float64("stability_threshold", rampCfg.StabilityThreshold),
+				zap.Int("total_iterations", int(totalIterations)),
 			)
 
 			prevWindowRPS = windowRPS
@@ -558,7 +571,7 @@ func ExecuteFlow(
 				analyCtxCancel()
 				break analysisLoop
 			case <-analysisTicker.C:
-				spawnIteration(analyCtx, currentRPS)
+				spawnIteration(analyCtx, nil)
 			}
 		}
 
@@ -703,7 +716,7 @@ func ExecuteWireFlow(
 	reports := make([]StepReport, 0, len(wf.Steps))
 	for _, step := range wf.Steps {
 		id := stepID(step)
-		res := executeStep(log, step, fCtx, authMap[wf.Auth])
+		res := executeStep(log, step, fCtx, authMap[wf.Auth], context.Background())
 		failed := res.Err != nil || res.StatusCode >= 400
 		if failed {
 			log.Warn("wire-flow step failed",
@@ -835,7 +848,7 @@ func ExecuteIterateFlow(
 			}
 			for _, step := range flow.Steps {
 				id := stepID(step)
-				res := executeStep(log, step, fCtx, authMap[flow.Auth])
+				res := executeStep(log, step, fCtx, authMap[flow.Auth], context.Background())
 				recordResult(id, res)
 				if res.Err != nil || res.StatusCode >= 400 {
 					log.Debug("iterate: step failed",
@@ -937,7 +950,7 @@ func ExecuteIterateFlow(
 				gStart := time.Now()
 				for _, step := range flow.Steps {
 					id := stepID(step)
-					res := executeStep(log, step, fCtx, authMap[flow.Auth])
+					res := executeStep(log, step, fCtx, authMap[flow.Auth], context.Background())
 					recordResult(id, res)
 					if res.Err != nil || res.StatusCode >= 400 {
 						log.Debug("iterate: step failed",
@@ -1007,7 +1020,7 @@ func ExecuteIterateFlow(
 
 // executeStep performs a single HTTP request described by step, using fCtx
 // to resolve template variables and auth credentials.
-func executeStep(log *zap.Logger, step configyml.Step, fCtx FlowContext, auth configyml.AuthProfile) stepResult {
+func executeStep(log *zap.Logger, step configyml.Step, fCtx FlowContext, auth configyml.AuthProfile, ctx context.Context) stepResult {
 	// Resolve endpoint template.
 	endpoint := renderTemplate(step.Endpoint, fCtx)
 	method := strings.ToUpper(step.Method)
@@ -1098,7 +1111,7 @@ func executeStep(log *zap.Logger, step configyml.Step, fCtx FlowContext, auth co
 		bodyReader = bytes.NewReader(requestBody)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return stepResult{Err: fmt.Errorf("build request: %w", err)}
 	}
