@@ -53,7 +53,7 @@ func ExecuteFlow(
 
 	// Global counters.
 	// totalRequests counts individual HTTP calls; totalIterations counts full flow executions.
-	var totalRequests, totalErrors, totalIterations int64
+	var totalLaunches, totalRequests, totalErrors, totalIterations int64
 	var allLatsMu sync.Mutex
 	var allLats []time.Duration
 
@@ -174,7 +174,7 @@ func ExecuteFlow(
 
 		// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
 		// Initial cap based on targetRPS (HTTP calls/s) converted to iterations/s.
-		semCap := int(targetRPS/nSteps*10) + 1
+		semCap := int((targetRPS/nSteps)*10) + 1
 		if semCap < 8 {
 			semCap = 8
 		}
@@ -193,14 +193,17 @@ func ExecuteFlow(
 
 		var rampWg sync.WaitGroup
 
-		spawnIteration := func(launchRPS float64) {
+		spawnIteration := func(ctx context.Context, launchRPS float64) {
 			select {
 			case sem <- struct{}{}:
 			default:
 				// semaphore full — drop this tick to avoid runaway goroutines
+				log.Warn("semaphore-full",
+					zap.Int("semaphorecap", cap(sem)),
+				)
 				return
 			}
-			atomic.AddInt64(&totalIterations, 1)
+			atomic.AddInt64(&totalLaunches, 1)
 			cur := atomic.AddInt64(&activeConcurrency, 1)
 			sampleConcurrency(cur)
 			rampWg.Add(1)
@@ -210,6 +213,13 @@ func ExecuteFlow(
 					atomic.AddInt64(&activeConcurrency, -1)
 					rampWg.Done()
 				}()
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				fCtx := FlowContext{"_base_url": baseURL}
 				fCtx["global"] = bucket.Snapshot()
 				fCtx["global_lists"] = bucket.SnapshotLists()
@@ -221,6 +231,13 @@ func ExecuteFlow(
 				iterStart := time.Now()
 				iterOK := true
 				for _, step := range flow.Steps {
+					// Cancelar entre steps si el contexto expiró
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+
 					id := stepID(step)
 					res := executeStep(log, step, fCtx, authMap[flow.Auth])
 					recordResult(id, res)
@@ -242,6 +259,7 @@ func ExecuteFlow(
 				// when the goal is launchRPS HTTP calls/s with nSteps steps).
 				targetIterDur := time.Duration(float64(time.Second) * nSteps / launchRPS)
 				elapsed := time.Since(iterStart)
+				atomic.AddInt64(&totalIterations, 1)
 				if thinkTime := targetIterDur - elapsed; thinkTime > 0 {
 					thinkTimeMu.Lock()
 					thinkTimeSamples = append(thinkTimeSamples, thinkTime)
@@ -348,6 +366,9 @@ func ExecuteFlow(
 
 			winIdx++
 			windowItersBefore := atomic.LoadInt64(&totalIterations)
+
+			winCtx, winCancel := context.WithCancel(context.Background())
+
 			ticker := time.NewTicker(tickInterval(currentRPS))
 			winTimer := time.NewTimer(stepWin)
 		rampWindow:
@@ -355,9 +376,10 @@ func ExecuteFlow(
 				select {
 				case <-winTimer.C:
 					ticker.Stop()
+					winCancel()
 					break rampWindow
 				case <-ticker.C:
-					spawnIteration(currentRPS)
+					spawnIteration(winCtx, currentRPS)
 				}
 			}
 			winTimer.Stop()
@@ -470,6 +492,8 @@ func ExecuteFlow(
 		<-rampMonitorDone
 
 		rampDuration := time.Since(rampStart)
+
+		rampWg.Wait()
 
 		// Reset analysis-window metrics.
 		atomic.StoreInt64(&totalRequests, 0)
