@@ -1,0 +1,55 @@
+base_url: http://localhost:8080
+
+auth_profiles:
+  - name: app-user
+    type: custom_login
+    login_endpoint: /auth/login
+    method: POST
+    payload: |
+      { "email": "alice@example.com", "password": "s3cr3t" }
+    extract_token:
+      access_token: response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in: response.body.expires_in
+    refresh_endpoint: /auth/refresh
+    refresh_method: POST
+    refresh_payload: |
+      { "refresh_token": "{{ .refresh_token }}" }
+    refresh_extract:
+      access_token: response.body.access_token
+      refresh_token: response.body.refresh_token
+      expires_in: response.body.expires_in
+
+flows:
+  - name: person-lifecycle
+    type: end-to-end
+    duration: 30s
+    requests_per_second: 500
+    auth: app-user
+    steps:
+      - id: list-persons
+        endpoint: /persons
+        method: GET
+
+      - id: create-person
+        endpoint: /persons
+        method: POST
+        payload_strategy: random
+        extract:
+          - field: response.body.id
+            as: person_id
+
+      - id: get-person
+        endpoint: /persons/{{ .person_id }}
+        method: GET
+
+      - id: patch-person
+        endpoint: /persons/{{ .person_id }}
+        method: PATCH
+        payload_strategy: template
+        payload_template: |
+          { "phone": "+1-555-9999" }
+
+      - id: delete-person
+        endpoint: /persons/{{ .person_id }}
+        method: DELETE

@@ -1,0 +1,3 @@
+endpoint: /auth/register
+methods:
+    - method: POST

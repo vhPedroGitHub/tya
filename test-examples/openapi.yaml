@@ -1,0 +1,177 @@
+openapi: "3.0.3"
+info:
+  title: TYA Demo App
+  version: "1.0.0"
+
+paths:
+  /auth/register:
+    post:
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        "201":
+          description: Created
+
+  /auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: OK
+
+  /auth/refresh:
+    post:
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: OK
+
+  /persons:
+    get:
+      operationId: listPersons
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createPerson
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 40
+                last_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 40
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                  format: phone
+                birth_date:
+                  type: string
+                  format: date
+      responses:
+        "201":
+          description: Created
+
+  /persons/{id}:
+    get:
+      operationId: getPerson
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+    put:
+      operationId: replacePerson
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 40
+                last_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 40
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                  format: phone
+                birth_date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: OK
+    patch:
+      operationId: updatePerson
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone:
+                  type: string
+                  format: phone
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: deletePerson
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content

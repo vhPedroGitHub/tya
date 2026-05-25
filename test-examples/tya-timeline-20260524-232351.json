@@ -1,0 +1,216 @@
+{
+  "run_id": "1779683071686164574",
+  "started_at": "2026-05-24T23:23:51.518304254-05:00",
+  "flows": [
+    {
+      "name": "smoke-get-persons",
+      "timeline": [
+        {
+          "second_offset": 0,
+          "requests": 9,
+          "errors": 0
+        },
+        {
+          "second_offset": 1,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 2,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 3,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 4,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 5,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 6,
+          "requests": 10,
+          "errors": 0
+        },
+        {
+          "second_offset": 7,
+          "requests": 9,
+          "errors": 0
+        },
+        {
+          "second_offset": 8,
+          "requests": 11,
+          "errors": 0
+        },
+        {
+          "second_offset": 9,
+          "requests": 10,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "name": "person-lifecycle",
+      "timeline": [
+        {
+          "second_offset": 0,
+          "requests": 0,
+          "errors": 0
+        },
+        {
+          "second_offset": 1,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 2,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 3,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 4,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 5,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 6,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 7,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 8,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 9,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 10,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 11,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 12,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 13,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 14,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 15,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 16,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 17,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 18,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 19,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 20,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 21,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 22,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 23,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 24,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 25,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 26,
+          "requests": 5,
+          "errors": 0
+        },
+        {
+          "second_offset": 27,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 28,
+          "requests": 5,
+          "errors": 4
+        },
+        {
+          "second_offset": 29,
+          "requests": 5,
+          "errors": 0
+        }
+      ]
+    }
+  ]
+}
