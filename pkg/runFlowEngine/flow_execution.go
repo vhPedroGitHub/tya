@@ -271,33 +271,6 @@ func ExecuteFlow(
 
 		// ── Phase 1 + 2: Ramp-up and plateau detection ──────────────────────
 
-		// Live RPS monitor for ramp-up phase: logs actual HTTP calls/s every second.
-		rampMonitorCtx, rampMonitorCancel := context.WithCancel(context.Background())
-		rampMonitorDone := make(chan struct{})
-		go func() {
-			defer close(rampMonitorDone)
-			monTicker := time.NewTicker(time.Second)
-			defer monTicker.Stop()
-			prevIter := atomic.LoadInt64(&totalIterations)
-			for {
-				select {
-				case <-rampMonitorCtx.Done():
-					return
-				case <-monTicker.C:
-					curIter := atomic.LoadInt64(&totalIterations)
-					deltaIter := curIter - prevIter
-					liveRPS := float64(deltaIter) * nSteps
-					prevIter = curIter
-					log.Info("live_rps",
-						zap.String("flow", flow.Name),
-						zap.String("phase", "ramp_up"),
-						zap.Float64("rps", liveRPS),
-						zap.Float64("target_rps", targetRPS),
-					)
-				}
-			}
-		}()
-
 		rampStart := time.Now()
 		stableWindows := 0
 		prevWindowRPS := 0.0
@@ -487,9 +460,6 @@ func ExecuteFlow(
 				_ = stats // p95 available for future dynamic semaphore tuning
 			}
 		}
-
-		rampMonitorCancel()
-		<-rampMonitorDone
 
 		rampDuration := time.Since(rampStart)
 

@@ -104,64 +104,64 @@ auth_profiles:
     login_endpoint: /auth/login
     method: POST
     payload: |
-      { "email": "${TEST_USER}", "password": "${TEST_PASS}" }
+      { "email": "alice@example.com", "password": "s3cr3t" }
     extract_token:
-      access_token:  response.body.access_token
+      access_token: response.body.access_token
       refresh_token: response.body.refresh_token
-      expires_in:    response.body.expires_in
+      expires_in: response.body.expires_in
     refresh_endpoint: /auth/refresh
     refresh_method: POST
     refresh_payload: |
       { "refresh_token": "{{ .refresh_token }}" }
     refresh_extract:
-      access_token:  response.body.access_token
+      access_token: response.body.access_token
       refresh_token: response.body.refresh_token
-      expires_in:    response.body.expires_in
+      expires_in: response.body.expires_in
 
 flows:
   - name: person-lifecycle
     type: end-to-end
-    duration: 60s
-    requests_per_second: 20
+    duration: 30s
+    requests_per_second: 5
     auth: app-user
-    ramp_up:
-      initial_rps: 2             # Start at 2 HTTP calls/s (default: 1)
-      factor: 1.5                # Multiply by 1.5 each step window (default: 1.5)
-      step_window: 2s            # Measure for 2 s before growing (default: 2s)
-      stability_windows: 3       # 3 consecutive stable windows = natural plateau (default: 3)
-      stability_threshold: 0.05  # ±5% variation = stable (default: 0.05)
-      max_ramp_duration: 60s     # Force plateau after 60 s regardless (default: 600s)
-      max_negative_resets: 3     # Force plateau after 3 total negative resets (default: 3)
-      best_windows_avg: 3        # Average best 3 stable windows for forced RPS (default: 3)
     steps:
+      - id: list-persons
+        endpoint: /persons
+        method: GET
+
       - id: create-person
         endpoint: /persons
         method: POST
-        payload_strategy: random          # picks a random file from api/persons/post/
+        payload_strategy: random
+        extract:
+          - field: response.body.id
+            as: person_id
 
       - id: get-person
-        endpoint: /persons/{{ .create-person.response.body.id }}
+        endpoint: /persons/{{ .person_id }}
         method: GET
 
-      - id: patch-phone
-        endpoint: /persons/{{ .create-person.response.body.id }}
+      - id: patch-person
+        endpoint: /persons/{{ .person_id }}
         method: PATCH
         payload_strategy: template
         payload_template: |
-          { "phone": "+1-555-{{ randomDigits 4 }}" }
+          { "phone": "+1-555-9999" }
 
       - id: delete-person
-        endpoint: /persons/{{ .create-person.response.body.id }}
+        endpoint: /persons/{{ .person_id }}
         method: DELETE
 
-    children:
-      - name: verify-empty
-        type: alone
-        auth: app-user
-        steps:
-          - id: list-persons
-            endpoint: /persons
-            method: GET
+  - name: smoke-get-persons
+    type: alone
+    duration: 10s
+    requests_per_second: 10
+    auth: app-user
+    steps:
+      - id: list-persons-smoke
+        endpoint: /persons
+        method: GET
+
 ```
 
 **What this flow does, step by step:**

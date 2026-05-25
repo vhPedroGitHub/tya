@@ -46,7 +46,6 @@ func acquireToken(log *zap.Logger, auth configyml.AuthProfile, baseURL string, f
 				}
 			}
 		}
-		log.Info("auth: login successful", zap.String("profile", auth.Name))
 
 	case "oauth2_password":
 		form := fmt.Sprintf(
@@ -76,7 +75,6 @@ func acquireToken(log *zap.Logger, auth configyml.AuthProfile, baseURL string, f
 				fCtx[k] = v
 			}
 		}
-		log.Info("auth: oauth2 token acquired", zap.String("profile", auth.Name))
 	}
 }
 

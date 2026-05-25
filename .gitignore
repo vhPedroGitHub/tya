@@ -2,6 +2,7 @@
 bin/
 *.exe
 *.out
+*.bin
 
 # Go build cache
 *.test
@@ -19,7 +20,10 @@ vendor/
 *.db-wal
 
 # TYA run reports
+test-examples/tya-report-*.json
+test-examples/tya-timeline*.json
 tya-report-*.json
+tya-timeline-*.json
 
 # Environment / secrets
 .env
