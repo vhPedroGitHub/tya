@@ -156,34 +156,6 @@ flows:
 
 ---
 
-## Pattern: Wire-Flow Children (Cleanup After Pool Drains)
-
-```yaml
-flows:
-  - name: test-lifecycle
-    type: end-to-end
-    steps:
-      - id: create
-        endpoint: /resources
-        method: POST
-        extract:
-          - field: response.body.id
-            as: resource_id
-            global_list: true
-
-    children:
-      - name: run-after-all-goroutines
-        type: alone
-        steps:
-          - id: verify
-            endpoint: /resources
-            method: GET
-```
-
-Children run **after** all parent goroutines complete. They do NOT support `depends_on` or nested children.
-
----
-
 ## Pattern: Split Config Files by Concern
 
 ```yaml

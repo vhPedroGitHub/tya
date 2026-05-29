@@ -10,7 +10,6 @@ We are load-testing a REST API that manages "persons" (CRUD resource). The test 
 2. **Stress phase** — Hammer a read-only endpoint with sustained load
 3. **Iterate phase** — Process every seeded item through a multi-step lifecycle (GET → PATCH → verify)
 4. **Smoke phase** — Run a lightweight verification after all load has drained
-5. **Cleanup** — Wire-flow children delete all created resources
 
 ## Full Configuration
 
@@ -128,7 +127,7 @@ flows:
         endpoint: /persons
         method: GET
 
-  # ── Phase 5: Cleanup (wire-flow children) ────────────────────────────────
+  # ── Phase 5: Cleanup ────────────────────────────────
   - name: iterate-cleanup
     type: iterate
     auth: app-user
@@ -248,43 +247,6 @@ A lightweight verification that runs after all iterate processing is complete. L
 ```
 
 Processes the same list of person IDs, but this time each item gets a single DELETE request. Higher RPS (20) to clean up quickly.
-
-**Alternative with wire-flow children:**
-
-If you want cleanup to run as a child of the iterate flow (inheriting its final context), you can declare it inline:
-
-```yaml
-- name: iterate-lifecycle
-  type: iterate
-  requests_per_second: 15
-  iterate_list: seed-persons.person_id
-  steps:
-    - id: get-person
-      endpoint: /persons/{{ .item }}
-      method: GET
-    - id: patch-phone
-      endpoint: /persons/{{ .item }}
-      method: PATCH
-      payload_strategy: template
-      payload_template: |
-        { "phone": "+1-555-{{ randomDigits 4 }}" }
-    - id: verify
-      endpoint: /persons/{{ .item }}
-      method: GET
-  children:
-    - name: cleanup
-      type: iterate
-      auth: app-user
-      requests_per_second: 20
-      iterate_list: seed-persons.person_id
-      steps:
-        - id: delete
-          endpoint: /persons/{{ .item }}
-          method: DELETE
-```
-
-Children run sequentially after the parent's goroutine pool drains, inheriting the final flow context.
-
 ## Execution
 
 ```bash

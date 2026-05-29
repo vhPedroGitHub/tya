@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/vhPedroGitHub/tya/pkg/commands"
 	"github.com/spf13/cobra"
+	"github.com/vhPedroGitHub/tya/pkg/commands"
 	"go.uber.org/zap"
 )
 

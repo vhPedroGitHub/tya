@@ -1,0 +1,3 @@
+endpoint: /auth/refresh
+methods:
+    - method: POST

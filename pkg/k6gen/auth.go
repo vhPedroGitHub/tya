@@ -316,7 +316,7 @@ func envVarName(s string) string {
 }
 
 // envVarOrFallback returns a JavaScript expression for an auth value.
-//   - Pure env var: "Bearer ${TOKEN}" → template literal `Bearer ${__ENV.TOKEN || ''}`
+//   - Pure env var: "Bearer ${TOKEN}" → template literal `Bearer ${__ENV.TOKEN || ”}`
 //   - Simple env var: "${TOKEN}"       → __ENV.TOKEN || '${TOKEN}'
 //   - No env var:    "static-key"      → __ENV. || 'static-key' (plain literal)
 //

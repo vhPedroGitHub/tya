@@ -57,18 +57,18 @@ type RunK6SOptions struct {
 
 // flowConfig represents a single flow entry from config.json.
 type flowConfig struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	File       string   `json:"file"`
-	DependsOn  []string `json:"depends_on"`
-	RPS        float64  `json:"rps"`
-	Duration   string   `json:"duration"`
+	Name      string   `json:"name"`
+	Type      string   `json:"type"`
+	File      string   `json:"file"`
+	DependsOn []string `json:"depends_on"`
+	RPS       float64  `json:"rps"`
+	Duration  string   `json:"duration"`
 }
 
 // k6Config represents the config.json written by genk6.
 type k6Config struct {
-	BaseURL      string        `json:"base_url"`
-	Flows        []flowConfig  `json:"flows"`
+	BaseURL string       `json:"base_url"`
+	Flows   []flowConfig `json:"flows"`
 }
 
 func runRunK6S(log *zap.Logger, opts *RunK6SOptions) error {

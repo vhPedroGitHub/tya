@@ -1,0 +1,4 @@
+endpoint: /persons
+methods:
+    - method: GET
+    - method: POST

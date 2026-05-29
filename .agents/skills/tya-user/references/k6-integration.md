@@ -62,7 +62,6 @@ k6 output (metrics, summary) is printed to stdout.
 
 - **Flow dependencies are NOT translated** — generated scripts run independently. You must orchestrate ordering manually (e.g., shell script, k6 `setup()`/`teardown()`).
 - **GlobalBucket** (`globalGet`, `global_list`, `expand`) is a TYA-native concept and may not translate cleanly to k6 shared variables.
-- **`depends_on`** and **wire-flow children** have no k6 equivalent.
 - **Complex templates** may produce invalid JavaScript string literals; inspect generated scripts before running.
 
 ## Debugging generated scripts

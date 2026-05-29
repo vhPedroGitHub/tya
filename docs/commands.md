@@ -109,7 +109,6 @@ tya run --config my-config.yml
    - Flows without `depends_on` start immediately.
    - Flows with `depends_on` block until all dependencies have completed.
    - Each flow runs its goroutine pool for the configured `duration` targeting `requests_per_second`.
-   - After the pool drains, any `children` wire-flows run sequentially.
 5. Writes a JSON report to `tya-report-<unix-timestamp>.json`.
 
 **Test mode (`-t`):**

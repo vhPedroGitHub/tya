@@ -54,7 +54,6 @@ Each entry in `flows` is a `FlowReport` object:
   "think_time_applied_ms": 38.5,
   "latency_ms": { ... },
   "steps": [ ... ],
-  "children": [ ... ],
   "errors_by_status": {
     "500": 5,
     "503": 2
@@ -101,7 +100,6 @@ Each entry in `flows` is a `FlowReport` object:
 | `think_time_applied_ms` | float | Mean sleep applied per goroutine iteration to self-regulate pace (ms) |
 | `latency_ms` | LatencyStats | Aggregate latency across all steps (analysis window only) |
 | `steps` | array | Per-step breakdown (see StepReport below) |
-| `children` | array | Step reports from wire-flow children (omitted if none) |
 | `errors_by_status` | object | Count of failures grouped by HTTP status code |
 | `errors_by_step` | object | Count of failures grouped by step ID |
 | `ramp_up_windows` | array | Per-window diagnostics from the ramp-up phase (see RampUpWindow below) |
@@ -138,7 +136,7 @@ All values are in **milliseconds**.
 
 ## StepReport
 
-Each entry in `steps` (and `children`) is a `StepReport`:
+Each entry in `steps`is a `StepReport`:
 
 ```json
 {
@@ -220,6 +218,3 @@ A non-zero `think_time_applied_ms` means goroutines are sleeping between iterati
 
 **Tail latency:**
 A high p99 relative to p50 indicates intermittent slow responses — common causes are GC pauses, DB contention, or network jitter. The step-level breakdown in `steps[]` will isolate which endpoint is responsible.
-
-**Wire-flow children:**
-Step reports in `children` reflect teardown/cleanup steps that ran after the main load finished. Their latencies are not included in the flow-level `latency_ms` aggregate.

@@ -1,0 +1,26 @@
+endpoint: /persons/{id}
+methods:
+    - method: GET
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer
+    - method: PUT
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer
+    - method: PATCH
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer
+    - method: DELETE
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer

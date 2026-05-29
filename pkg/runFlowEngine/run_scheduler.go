@@ -3,10 +3,9 @@
 // RunScheduler drives the execution of a set of flows respecting their
 // depends_on DAG. Each flow runs in its own goroutine; flows with
 // dependencies block until every dependency has signalled completion via a
-// channel. After a parent flow finishes its goroutine pool, any declared
-// children (wire-flows) are executed sequentially before the parent signals
+// channel.
 // done to its dependents.
-package cli_functions
+package runflowengine
 
 import (
 	"sync"
@@ -15,107 +14,6 @@ import (
 
 	"go.uber.org/zap"
 )
-
-// GlobalBucket is a thread-safe, cross-flow key-value store. Values are
-// namespaced by the name of the flow that wrote them, so keys from different
-// flows never collide. A single GlobalBucket instance is created in runFlows
-// and passed to every executeFlow call.
-//
-// Two kinds of data can be stored:
-//   - Scalar values via Set (last-write-wins) — written when global: true
-//   - List values via AppendList (append-only) — written when global_list: true
-//
-// Write: applyExtracts writes a value when the extractor has Global/GlobalList.
-// Read:  at the start of each goroutine iteration the bucket snapshot is
-//
-//	injected into fCtx["global"] / fCtx["global_lists"], making values
-//	accessible in templates via globalGet / globalGetList.
-type GlobalBucket struct {
-	mu    sync.RWMutex
-	data  map[string]map[string]any
-	lists map[string]map[string][]any
-}
-
-// NewGlobalBucket returns an empty, ready-to-use GlobalBucket.
-func NewGlobalBucket() *GlobalBucket {
-	return &GlobalBucket{
-		data:  make(map[string]map[string]any),
-		lists: make(map[string]map[string][]any),
-	}
-}
-
-// Set stores value under the namespace of flowName with the given key.
-// Concurrent writes use last-write-wins semantics.
-func (b *GlobalBucket) Set(flowName, key string, value any) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.data[flowName] == nil {
-		b.data[flowName] = make(map[string]any)
-	}
-	b.data[flowName][key] = value
-}
-
-// AppendList appends value to the list stored under flowName/key.
-// Concurrent appends are safe; the list grows atomically.
-func (b *GlobalBucket) AppendList(flowName, key string, value any) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.lists[flowName] == nil {
-		b.lists[flowName] = make(map[string][]any)
-	}
-	b.lists[flowName][key] = append(b.lists[flowName][key], value)
-}
-
-// GetList returns a copy of the list stored under flowName/key.
-func (b *GlobalBucket) GetList(flowName, key string) []any {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.lists[flowName] == nil {
-		return nil
-	}
-	src := b.lists[flowName][key]
-	if len(src) == 0 {
-		return nil
-	}
-	cp := make([]any, len(src))
-	copy(cp, src)
-	return cp
-}
-
-// Snapshot returns a deep copy of all scalar values as
-// map[string]map[string]any. The copy is safe to embed in a flow context
-// without holding the lock.
-func (b *GlobalBucket) Snapshot() map[string]map[string]any {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	out := make(map[string]map[string]any, len(b.data))
-	for flow, ns := range b.data {
-		cp := make(map[string]any, len(ns))
-		for k, v := range ns {
-			cp[k] = v
-		}
-		out[flow] = cp
-	}
-	return out
-}
-
-// SnapshotLists returns a deep copy of all list values as
-// map[string]map[string][]any.
-func (b *GlobalBucket) SnapshotLists() map[string]map[string][]any {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	out := make(map[string]map[string][]any, len(b.lists))
-	for flow, ns := range b.lists {
-		cp := make(map[string][]any, len(ns))
-		for k, src := range ns {
-			dst := make([]any, len(src))
-			copy(dst, src)
-			cp[k] = dst
-		}
-		out[flow] = cp
-	}
-	return out
-}
 
 // IterateFlowExecutorFunc runs an iterate flow that processes every item in
 // a global-bucket list. The itemVar is the template key (default "item").
@@ -148,10 +46,10 @@ type FlowReport struct {
 	// IterationsPerSecond is the measured flow iterations per second (= RPSAchieved / N steps).
 	IterationsPerSecond float64          `json:"iterations_per_second,omitempty"`
 	LatencyMS           LatencyStats     `json:"latency_ms"`
-	Steps               []StepReport     `json:"steps"`
-	Children            []StepReport     `json:"children,omitempty"`
 	ErrorsByStatus      map[string]int64 `json:"errors_by_status,omitempty"`
 	ErrorsByStep        map[string]int64 `json:"errors_by_step,omitempty"`
+	// Steps is a per-step breakdown included in the flow report.
+	Steps []StepReport `json:"steps,omitempty"`
 
 	// Ramp-up and adaptive engine fields.
 
@@ -194,21 +92,6 @@ type FlowReport struct {
 	// ThinkTimeAppliedMs is the mean think-time sleep (ms) applied at the
 	// end of each goroutine iteration to regulate the flow rhythm.
 	ThinkTimeAppliedMs float64 `json:"think_time_applied_ms,omitempty"`
-	// Timeline holds per-second request and error counts sampled during the
-	// analysis window. Each point covers exactly one second of wall time.
-	Timeline []TimelinePoint `json:"timeline,omitempty"`
-}
-
-// TimelinePoint captures the number of HTTP requests and errors observed in
-// a single one-second bucket during the analysis window.
-type TimelinePoint struct {
-	// SecondOffset is the elapsed second (0-based) from the start of the
-	// analysis window.
-	SecondOffset int `json:"second_offset"`
-	// Requests is the number of HTTP calls completed in this second.
-	Requests int64 `json:"requests"`
-	// Errors is the number of failed HTTP calls in this second.
-	Errors int64 `json:"errors"`
 }
 
 // LatencyStats holds the full suite of latency percentiles (in milliseconds).
@@ -251,21 +134,17 @@ type RampUpWindow struct {
 }
 
 // RunScheduler executes a list of flows in dependency order. It starts each
-// flow as soon as all of its dependencies have signalled completion. Children
-// (wire-flows) are executed synchronously after the parent's goroutine pool
-// drains and before the parent signals done.
+// flow as soon as all of its dependencies have signalled completion.
 //
-// flowExec, wireExec, and iterateExec are injectable so that the scheduler
+// flowExec and iterateExec are injectable so that the scheduler
 // can be tested independently of HTTP concerns.
 func RunScheduler(
 	log *zap.Logger,
 	flows []configyml.Flow,
 	flowExec FlowExecutorFunc,
-	wireExec WireFlowExecutorFunc,
 	iterateExec IterateFlowExecutorFunc,
 ) map[string]FlowReport {
 	// One "done" channel per flow — closed when the flow (including its
-	// wire-flow children) has finished.
 	done := make(map[string]chan struct{}, len(flows))
 	for _, f := range flows {
 		done[f.Name] = make(chan struct{})
@@ -295,32 +174,11 @@ func RunScheduler(
 			)
 
 			var report FlowReport
-			var lastCtx FlowContext
 
 			if f.Type == "iterate" {
 				report = iterateExec(f)
 				report.Name = f.Name
 				report.Type = f.Type
-			} else {
-				// Execute the main flow body.
-				report, lastCtx = flowExec(f)
-				report.Name = f.Name
-				report.Type = f.Type
-
-				// Execute wire-flow children sequentially.
-				for _, child := range f.Children {
-					log.Info("wire-flow starting",
-						zap.String("parent", f.Name),
-						zap.String("child", child.Name),
-					)
-					childSteps := wireExec(child, lastCtx)
-					report.Children = append(report.Children, childSteps...)
-					log.Info("wire-flow finished",
-						zap.String("parent", f.Name),
-						zap.String("child", child.Name),
-						zap.Int("steps", len(childSteps)),
-					)
-				}
 			}
 
 			mu.Lock()

@@ -82,11 +82,6 @@ scripts/
 - List read from `data['flowName.key']` in `default()`.
 - RPS controls inter-item pace; executed sequentially per item.
 
-### Wire-Flow Children
-- Run sequentially after parent goroutine pool drains.
-- Receive final flow context of last completed goroutine.
-- Done-channel closed only after all children finish.
-
 ### Adaptive Run Engine (pkg/commands/run.go)
 - `requests_per_second` always means HTTP calls/s regardless of step count.
 - 4 phases: ramp-up (factor=1.5) → plateau detection → analysis window → drain.

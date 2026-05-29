@@ -43,13 +43,6 @@ flows:
     auth: my-auth-profile  # Reference to an auth_profiles entry
     depends_on:            # Wait for these flows to complete first
       - other-flow
-    children:              # Wire-flows executed after this flow drains
-      - name: cleanup
-        type: alone
-        auth: my-auth-profile
-        steps:
-          - endpoint: /cleanup
-            method: POST
     steps:
       - ...
 ```
@@ -70,10 +63,6 @@ flows:
       - seed-data
     ...
 ```
-
-### Wire-Flow Children
-
-`children` are flows that run **after** the parent flow's goroutine pool has fully drained. They are useful for teardown or cleanup that must happen once load has stopped but before the overall run ends. Children run sequentially after the parent and share the final flow context of the last completed goroutine.
 
 ### Iterate Flows
 
@@ -303,7 +292,6 @@ Alternatively, use `{{ index .global "flow-name" "key" }}`:
 
 - Each flow writes into its own namespace only (the flow name).
 - The bucket is created once per run and shared across all flows.
-- Wire-flow children inherit the same global bucket snapshot as their parent.
 - Values are **not** persisted to disk — the bucket exists only for the duration of the run.
 
 ---
@@ -466,7 +454,6 @@ flows:
     requests_per_second: 20
     auth: <profile-name>
     depends_on: [...]
-    children: [...]
     ramp_up:                     # optional; all sub-fields have defaults
       initial_rps: 1
       factor: 1.5

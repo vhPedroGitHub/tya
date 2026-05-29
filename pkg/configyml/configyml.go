@@ -81,8 +81,8 @@ type RunConfig struct {
 
 // AuthProfile describes one authentication configuration.
 type AuthProfile struct {
-	Name               string `yaml:"name"`
-	Type               string `yaml:"type"` // oauth2_password | oauth2_client_credentials | api_key | basic | custom_login
+	Name string `yaml:"name"`
+	Type string `yaml:"type"` // oauth2_password | oauth2_client_credentials | api_key | basic | custom_login
 
 	// OAuth2 password / client_credentials
 	TokenURL     string   `yaml:"token_url,omitempty"`
@@ -194,21 +194,17 @@ func (r RampUp) Resolve() RampUp {
 
 // Flow describes a named test/load flow.
 type Flow struct {
-	Name              string     `yaml:"name"`
-	Type              string     `yaml:"type"` // end-to-end | alone | iterate
-	Duration          string     `yaml:"duration,omitempty"`
-	RequestsPerSecond float64    `yaml:"requests_per_second,omitempty"`
-	Auth              string     `yaml:"auth,omitempty"`
-	Steps             []Step     `yaml:"steps"`
+	Name              string  `yaml:"name"`
+	Type              string  `yaml:"type"` // end-to-end | alone | iterate
+	Duration          string  `yaml:"duration,omitempty"`
+	RequestsPerSecond float64 `yaml:"requests_per_second,omitempty"`
+	Auth              string  `yaml:"auth,omitempty"`
+	Steps             []Step  `yaml:"steps"`
 	// RampUp controls the adaptive ramp-up phase. Omit to use defaults.
-	RampUp            *RampUp    `yaml:"ramp_up,omitempty"`
+	RampUp *RampUp `yaml:"ramp_up,omitempty"`
 	// DependsOn lists flow names that must complete successfully before this
 	// flow starts. TYA validates the list at startup and rejects cycles.
-	DependsOn []string   `yaml:"depends_on,omitempty"`
-	// Children holds wire-flows that run exactly once after the parent
-	// completes, inheriting the parent's last execution context.
-	Children  []WireFlow `yaml:"children,omitempty"`
-
+	DependsOn []string `yaml:"depends_on,omitempty"`
 	// IterateList is the source for type: iterate flows.
 	// Format: "flow-name.key" — references a list stored in the global bucket.
 	IterateList string `yaml:"iterate_list,omitempty"`
@@ -219,7 +215,6 @@ type Flow struct {
 
 // WireFlow is a one-shot flow that runs after its parent flow completes.
 // It inherits the parent's final execution context and cannot be referenced
-// in depends_on lists or have its own children.
 type WireFlow struct {
 	Name  string `yaml:"name"`
 	Type  string `yaml:"type"` // must be "wire-flow"
@@ -229,14 +224,14 @@ type WireFlow struct {
 
 // Step is one HTTP request inside a flow.
 type Step struct {
-	ID              string            `yaml:"id,omitempty"`
-	Endpoint        string            `yaml:"endpoint"`
-	Method          string            `yaml:"method"`
+	ID       string `yaml:"id,omitempty"`
+	Endpoint string `yaml:"endpoint"`
+	Method   string `yaml:"method"`
 	// PayloadStrategy controls how the request body is built.
 	// Supported values: random | fixed | template | extracted | template-json
-	PayloadStrategy  string            `yaml:"payload_strategy,omitempty"`
-	PayloadFile      string            `yaml:"payload_file,omitempty"`
-	PayloadTemplate  string            `yaml:"payload_template,omitempty"`
+	PayloadStrategy string `yaml:"payload_strategy,omitempty"`
+	PayloadFile     string `yaml:"payload_file,omitempty"`
+	PayloadTemplate string `yaml:"payload_template,omitempty"`
 	// PayloadOverrides is used with strategy "template-json".
 	// Each key is a dot-notation JSON path (e.g. "email", "address.city") and
 	// each value is a Go template string rendered against the flow context.
