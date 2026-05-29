@@ -19,8 +19,6 @@ func NewRunCmd(log *zap.Logger) *cobra.Command {
 
 Flows are started in dependency order: a flow listed in another flow's
 depends_on will not start until all of its dependencies have completed.
-Wire-flow children declared inside a parent flow run exactly once after
-the parent finishes, inheriting its final execution context.
 
 Examples:
   tya run                    # Execute all flows in dependency order

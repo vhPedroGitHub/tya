@@ -452,18 +452,7 @@ def build_pdf(report: dict, output_path: str) -> None:
             story.append(Paragraph("Steps", h3_style))
             _render_steps_table(story, steps, body_style, col_multiplier=1.0)
 
-        # Children table
-        children = flow.get("children", [])
-        if children:
-            story.append(Spacer(1, 0.3 * cm))
-            story.append(Paragraph("Wire-flow children", h3_style))
-            story.append(Paragraph(
-                "These steps ran after the load pool drained (teardown / verification).",
-                small_style,
-            ))
-            story.append(Spacer(1, 0.2 * cm))
-            _render_steps_table(story, children, body_style, col_multiplier=1.0)
-
+        
         # Errors by status
         errors_by_status: dict = flow.get("errors_by_status", {})
         if errors_by_status:

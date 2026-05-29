@@ -254,7 +254,6 @@ The JSON report includes the full ramp-up window history and engine diagnostics:
   ],
   "latency_ms": {"min": 0.2, "mean": 0.5, "p50": 0.4, "p90": 0.8, "p95": 1.1, "p99": 3.2, "max": 48.1},
   "steps": [ ... ],
-  "children": [ ... ]
 }
 ```
 
@@ -295,7 +294,7 @@ The PDF includes:
   - Plateau type: `Natural` (green) or `Forced (negative resets)` / `Forced (timeout)` (red).
   - `Negative resets` count and `Iterations/s`.
 - **Ramp-up Windows table** — one row per window with target RPS, observed RPS, variation %, stable flag, and negative-reset flag. Rows with a negative reset are highlighted in red.
-- **Per-step breakdown** and **wire-flow children** results.
+- **Per-step breakdown** .
 
 ---
 

@@ -189,14 +189,6 @@ flows:
         payload_strategy: template
         payload_template: |
           { "cart_id": "{{ .cart_id }}" }
-    children:
-      - name: verify-order          # Runs after the load pool drains
-        type: alone
-        auth: oauth2-user
-        steps:
-          - id: list-orders
-            endpoint: /orders
-            method: GET
 
   - name: smoke-get-users
     type: alone
@@ -221,7 +213,7 @@ flows:
 
 ## Flow Dependencies
 
-Flows can declare `depends_on` to express ordering constraints. TYA validates the entire dependency graph at startup — checking that every referenced flow name exists and that there are no cycles — then executes flows in topological order. A flow will not start until every flow it depends on has fully completed (including its wire-flow children).
+Flows can declare `depends_on` to express ordering constraints. TYA validates the entire dependency graph at startup — checking that every referenced flow name exists and that there are no cycles — then executes flows in topological order. A flow will not start until every flow it depends on has fully completed.
 
 ```yaml
 flows:
@@ -249,45 +241,6 @@ flows:
 - All listed names must exist in the same `config-run.yml`; TYA exits with an error otherwise.
 - Circular dependencies are detected via DFS colouring and cause a startup error.
 - Implemented in `pkg/cli_functions/dependency_graph.go` (`ValidateDependencyGraph`, `TopologicalOrder`).
-
----
-
-## Wire-Flow Children
-
-A flow can declare `children` — a list of wire-flows that run **after** the parent flow's entire goroutine pool has drained. Children are useful for teardown, cleanup, or assertions that must happen once load has stopped but before the parent signals completion to its own dependents.
-
-```yaml
-flows:
-  - name: person-lifecycle
-    type: end-to-end
-    duration: 60s
-    requests_per_second: 20
-    auth: app-user
-    steps:
-      - id: create-person
-        endpoint: /persons
-        method: POST
-        payload_strategy: random
-      - id: delete-person
-        endpoint: /persons/{{ .create-person.response.body.id }}
-        method: DELETE
-    children:
-      - name: verify-empty
-        type: alone
-        auth: app-user
-        steps:
-          - id: list-persons
-            endpoint: /persons
-            method: GET
-```
-
-**Behaviour:**
-- Children run **sequentially** in the order they are listed, after the parent pool fully drains.
-- Each child receives the **final flow context** of the last goroutine that completed in the parent pool, so extracted values (IDs, tokens, etc.) are available inside child steps via `{{ .key }}` templates.
-- Child step metrics are reported under `children[]` in the JSON report, separate from the parent `steps[]`.
-- The parent flow's done-channel is closed only after all children finish, so any flows that `depends_on` the parent correctly wait for teardown to complete.
-- Wire-flow children do **not** support `depends_on` or nested children themselves.
-- Implemented in `pkg/cli_functions/run_scheduler.go` (`RunScheduler`, `WireFlowExecutorFunc`).
 
 ---
 

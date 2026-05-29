@@ -30,7 +30,6 @@ TYA takes a different approach:
 - **End-to-end flows** — chain steps sequentially, extract values from responses (e.g. IDs, tokens), and inject them into later steps via Go templates.
 - **Multiple payload strategies** — `random`, `fixed`, `template`, and `extracted` give you full control over what each step sends.
 - **Flow dependency graph** — declare `depends_on` between flows; TYA validates the DAG (cycle detection included) and executes flows in topological order.
-- **Wire-flow children** — attach teardown/cleanup flows that run after a parent's load pool drains.
 - **Authentication** — built-in support for `oauth2_password`, `oauth2_client_credentials`, `api_key`, `basic`, and `custom_login` auth profiles with automatic token refresh.
 - **Goroutine-based load engine** — auto-scaling worker pool targets your configured RPS, backs off on diminishing returns, and streams metrics throughout the run.
 - **Test mode** — `tya run -t` executes each step exactly once before committing to a full load run.

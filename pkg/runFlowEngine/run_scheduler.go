@@ -3,8 +3,7 @@
 // RunScheduler drives the execution of a set of flows respecting their
 // depends_on DAG. Each flow runs in its own goroutine; flows with
 // dependencies block until every dependency has signalled completion via a
-// channel. After a parent flow finishes its goroutine pool, any declared
-// children (wire-flows) are executed sequentially before the parent signals
+// channel.
 // done to its dependents.
 package runflowengine
 
@@ -47,8 +46,6 @@ type FlowReport struct {
 	// IterationsPerSecond is the measured flow iterations per second (= RPSAchieved / N steps).
 	IterationsPerSecond float64          `json:"iterations_per_second,omitempty"`
 	LatencyMS           LatencyStats     `json:"latency_ms"`
-	Steps               []StepReport     `json:"steps"`
-	Children            []StepReport     `json:"children,omitempty"`
 	ErrorsByStatus      map[string]int64 `json:"errors_by_status,omitempty"`
 	ErrorsByStep        map[string]int64 `json:"errors_by_step,omitempty"`
 
@@ -93,21 +90,6 @@ type FlowReport struct {
 	// ThinkTimeAppliedMs is the mean think-time sleep (ms) applied at the
 	// end of each goroutine iteration to regulate the flow rhythm.
 	ThinkTimeAppliedMs float64 `json:"think_time_applied_ms,omitempty"`
-	// Timeline holds per-second request and error counts sampled during the
-	// analysis window. Each point covers exactly one second of wall time.
-	Timeline []TimelinePoint `json:"timeline,omitempty"`
-}
-
-// TimelinePoint captures the number of HTTP requests and errors observed in
-// a single one-second bucket during the analysis window.
-type TimelinePoint struct {
-	// SecondOffset is the elapsed second (0-based) from the start of the
-	// analysis window.
-	SecondOffset int `json:"second_offset"`
-	// Requests is the number of HTTP calls completed in this second.
-	Requests int64 `json:"requests"`
-	// Errors is the number of failed HTTP calls in this second.
-	Errors int64 `json:"errors"`
 }
 
 // LatencyStats holds the full suite of latency percentiles (in milliseconds).
@@ -150,21 +132,17 @@ type RampUpWindow struct {
 }
 
 // RunScheduler executes a list of flows in dependency order. It starts each
-// flow as soon as all of its dependencies have signalled completion. Children
-// (wire-flows) are executed synchronously after the parent's goroutine pool
-// drains and before the parent signals done.
+// flow as soon as all of its dependencies have signalled completion.
 //
-// flowExec, wireExec, and iterateExec are injectable so that the scheduler
+// flowExec and iterateExec are injectable so that the scheduler
 // can be tested independently of HTTP concerns.
 func RunScheduler(
 	log *zap.Logger,
 	flows []configyml.Flow,
 	flowExec FlowExecutorFunc,
-	wireExec WireFlowExecutorFunc,
 	iterateExec IterateFlowExecutorFunc,
 ) map[string]FlowReport {
 	// One "done" channel per flow — closed when the flow (including its
-	// wire-flow children) has finished.
 	done := make(map[string]chan struct{}, len(flows))
 	for _, f := range flows {
 		done[f.Name] = make(chan struct{})
@@ -194,32 +172,11 @@ func RunScheduler(
 			)
 
 			var report FlowReport
-			var lastCtx FlowContext
 
 			if f.Type == "iterate" {
 				report = iterateExec(f)
 				report.Name = f.Name
 				report.Type = f.Type
-			} else {
-				// Execute the main flow body.
-				report, lastCtx = flowExec(f)
-				report.Name = f.Name
-				report.Type = f.Type
-
-				// Execute wire-flow children sequentially.
-				for _, child := range f.Children {
-					log.Info("wire-flow starting",
-						zap.String("parent", f.Name),
-						zap.String("child", child.Name),
-					)
-					childSteps := wireExec(child, lastCtx)
-					report.Children = append(report.Children, childSteps...)
-					log.Info("wire-flow finished",
-						zap.String("parent", f.Name),
-						zap.String("child", child.Name),
-						zap.Int("steps", len(childSteps)),
-					)
-				}
 			}
 
 			mu.Lock()

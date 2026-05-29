@@ -79,16 +79,13 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 
 	// Build the executor functions that close over logger, authMap, opts, baseURL, bucket.
 	flowExec := func(flow configyml.Flow) (runflowengine.FlowReport, runflowengine.FlowContext) {
-		return runflowengine.ExecuteFlow(log, flow, authMap, opts, baseURL, bucket)
-	}
-	wireExec := func(wf configyml.WireFlow, parentCtx runflowengine.FlowContext) []runflowengine.StepReport {
-		return runflowengine.ExecuteWireFlow(log, wf, authMap, parentCtx, baseURL, bucket)
+		return runflowengine.ExecuteFlowv2(log, flow, authMap, opts, baseURL, bucket)
 	}
 	iterateExec := func(flow configyml.Flow) runflowengine.FlowReport {
 		return runflowengine.ExecuteIterateFlow(log, flow, authMap, opts, baseURL, bucket)
 	}
 
-	results := runflowengine.RunScheduler(log, flows, flowExec, wireExec, iterateExec)
+	results := runflowengine.RunScheduler(log, flows, flowExec, iterateExec)
 
 	finishedAt := time.Now()
 
@@ -106,35 +103,6 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 		log.Warn("could not write report", zap.Error(err))
 	} else {
 		log.Info("report written", zap.String("path", reportPath))
-	}
-
-	// Write a separate timeline file containing per-flow, per-second request counts.
-	type flowTimeline struct {
-		Name     string                        `json:"name"`
-		Timeline []runflowengine.TimelinePoint `json:"timeline"`
-	}
-	type timelineReport struct {
-		RunID     string         `json:"run_id"`
-		StartedAt time.Time      `json:"started_at"`
-		Flows     []flowTimeline `json:"flows"`
-	}
-	tl := timelineReport{
-		RunID:     report.RunID,
-		StartedAt: report.StartedAt,
-	}
-	for name, fr := range results {
-		if len(fr.Timeline) > 0 {
-			tl.Flows = append(tl.Flows, flowTimeline{Name: name, Timeline: fr.Timeline})
-		}
-	}
-	if len(tl.Flows) > 0 {
-		tlPath := fmt.Sprintf("tya-timeline-%s.json", startedAt.Format("20060102-150405"))
-		tlData, _ := json.MarshalIndent(tl, "", "  ")
-		if err := os.WriteFile(tlPath, tlData, 0o644); err != nil {
-			log.Warn("could not write timeline", zap.Error(err))
-		} else {
-			log.Info("timeline written", zap.String("path", tlPath))
-		}
 	}
 
 	return nil

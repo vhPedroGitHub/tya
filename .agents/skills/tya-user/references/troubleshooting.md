@@ -52,11 +52,6 @@ flows:
       - seed
     ...
 ```
-
-Or use wire-flow children (`children:`) for post-drain teardown.
-
----
-
 ### Iterate flow with scalar vs object items
 
 **Scalar items** (e.g. list of strings):
@@ -82,18 +77,6 @@ steps:
 Using `{{ .item }}` on object items renders `map[key:value ...]` which produces broken URLs.
 
 ---
-
-### Wire-flow children limitations
-
-- Children run after the **entire parent goroutine pool drains**, not on a per-goroutine basis.
-- Children do **NOT** support `depends_on`.
-- Children do **NOT** support nested children.
-- Children run sequentially in listed order.
-- Children receive the final flow context of the **last completed goroutine**.
-
----
-
-## Debugging
 
 ### Check which headers TYA sends
 
@@ -179,7 +162,6 @@ python3 -c "import yaml; yaml.safe_load(open('config-run.yml'))" && echo "OK"
 - **Use auth profiles for clarity:** Define auth once and reference by name across flows.
 - **Name steps with `id:`** to reference them in extraction paths and expressed values.
 - **Use `depends_on`** to control flow ordering — iterate flows must wait for their data source.
-- **Use wire-flow children** for teardown that must run after **all goroutines** finish (not per-goroutine).
 - **`expand: true` is required** when extracting arrays into `global_list`.
 - **`inject_as: header` is required** for `api_key` type to send `Authorization: Bearer`.
 - **Global bucket is ephemeral** — design self-contained config files.

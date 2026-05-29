@@ -1,6 +1,6 @@
 ---
 name: tya-user
-description: Helps configure and use TYA (Test Your API) — a CLI load-testing tool. Knows how to write config-run.yml flows, config-create.yml, auth profiles, payload strategies, data extraction, flow dependencies, GlobalBucket, iterate flows, wire-flow children, and k6 script generation (tya genk6 / tya runk6s). Use when setting up a TYA project, writing flows against a real API, or debugging a run.
+description: Helps configure and use TYA (Test Your API) — a CLI load-testing tool. Knows how to write config-run.yml flows, config-create.yml, auth profiles, payload strategies, data extraction, flow dependencies, GlobalBucket, iterate flows, and k6 script generation (tya genk6 / tya runk6s). Use when setting up a TYA project, writing flows against a real API, or debugging a run.
 license: MIT
 metadata:
   author: https://github.com/vhPedroGitHub
@@ -65,7 +65,7 @@ my-project/
 
 | File | Contents |
 |------|----------|
-| `references/config-reference.md` | Auth profiles, flow types, steps, payload strategies, extraction, GlobalBucket, templates, dependencies, wire-flow children |
+| `references/config-reference.md` | Auth profiles, flow types, steps, payload strategies, extraction, GlobalBucket, templates, dependencies, |
 | `references/patterns.md` | CRUD lifecycle, seed + load test, fetch + iterate with `expand: true`, flow dependencies |
 | `references/troubleshooting.md` | Known TYA issues, debugging, tips |
 | `references/k6-integration.md` | `tya genk6` / `tya runk6s`, requirements, workflow, limitations |
@@ -102,12 +102,6 @@ flows:
     auth: my-auth
     depends_on:
       - other-flow
-    children:
-      - name: cleanup
-        type: alone
-        steps:
-          - endpoint: /cleanup
-            method: POST
     steps:
       - id: step-1
         endpoint: /resources
