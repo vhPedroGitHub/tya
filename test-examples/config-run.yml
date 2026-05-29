@@ -6,7 +6,7 @@ auth_profiles:
     login_endpoint: /auth/login
     method: POST
     payload: |
-      { "email": "alice@example.com", "password": "s3cr3t" }
+      { "email": "testuser@tya.dev", "password": "secret123" }
     extract_token:
       access_token: response.body.access_token
       refresh_token: response.body.refresh_token
@@ -23,8 +23,8 @@ auth_profiles:
 flows:
   - name: person-lifecycle
     type: end-to-end
-    duration: 30s
-    requests_per_second: 500
+    duration: 10s
+    requests_per_second: 20
     auth: app-user
     steps:
       - id: list-persons

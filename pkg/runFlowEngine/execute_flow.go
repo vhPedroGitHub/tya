@@ -63,6 +63,9 @@ func ExecuteFlowv2(
 	var lastCtxMu sync.Mutex
 	var lastCtx FlowContext
 
+	// stepReports will be populated by either test mode or adaptive engine
+	var stepReports []StepReport
+
 	recordResult := func(id string, res stepResult) {
 		RecordResult(id, res, &totalRequests, &totalErrors, &allLatsMu, &allLats, stepBuckets, errByStatus, errByStep, &errMu)
 	}
@@ -100,6 +103,13 @@ func ExecuteFlowv2(
 			lastCtxMu.Unlock()
 		}
 		atomic.AddInt64(&totalIterations, 1)
+		
+		// Build per-step reports for test mode
+		stepReports = make([]StepReport, 0, len(flow.Steps))
+		for _, s := range flow.Steps {
+			id := stepID(s)
+			stepReports = append(stepReports, stepBuckets[id].toReport(id))
+		}
 	} else {
 		// Delegate adaptive ramp-up + analysis to the refactored function.
 		rampCfg := configyml.RampUp{}
@@ -119,7 +129,7 @@ func ExecuteFlowv2(
 		}
 
 		initRPS := rampCfg.InitialRPS
-		totalReqs, totalErrs, totalIters, lats, stableRPS, rampResp := revisionerRampUpandExecuteFlow(log, flow, rampCfg, initRPS, flow.RequestsPerSecond, stepWin, nSteps, bucket, authMap, baseURL, lastCtx, duration)
+		totalReqs, totalErrs, totalIters, lats, stableRPS, rampResp, stepReps := revisionerRampUpandExecuteFlow(log, flow, rampCfg, initRPS, flow.RequestsPerSecond, stepWin, nSteps, bucket, authMap, baseURL, lastCtx, duration)
 		
 		// Update counters from the adaptive engine
 		atomic.AddInt64(&totalRequests, totalReqs)
@@ -128,6 +138,9 @@ func ExecuteFlowv2(
 		allLatsMu.Lock()
 		allLats = append(allLats, lats...)
 		allLatsMu.Unlock()
+		
+		// Use step reports from adaptive engine
+		stepReports = stepReps
 		
 		// Compute RPS achieved
 		if rampResp.rampDuration.Seconds() > 0 {
@@ -140,12 +153,16 @@ func ExecuteFlowv2(
 			r.AnalysisDurationS = duration.Seconds()
 			r.StableRPSTarget = flow.RequestsPerSecond
 			r.StableRPSAchieved = stableRPS
-			r.IterationsPerSecond = float64(totalIters) / duration.Seconds()
+			r.IterationsPerSecond = rampResp.iterationsPerSecond
 			r.StableRPSMaxReached = rampResp.maxReached
 			r.ForcedPlateau = rampResp.forcedPlateau
 			r.ForcedPlateauReason = rampResp.forcedPlateauReason
 			r.ForcedPlateauRPS = stableRPS
 			r.NegativeResets = rampResp.totalNegativeResets
+			r.RampUpWindows = rampResp.rampWindows
+			r.AvgConcurrency = rampResp.avgConcurrency
+			r.MaxConcurrency = rampResp.maxConcurrency
+			r.ThinkTimeAppliedMs = rampResp.thinkTimeAppliedMs
 		}
 	}
 
@@ -169,13 +186,6 @@ func ExecuteFlowv2(
 	ebs := copyInt64Map(errByStatus)
 	ebStep := copyInt64Map(errByStep)
 	errMu.Unlock()
-
-	// Build per-step reports.
-	stepReports := make([]StepReport, 0, len(flow.Steps))
-	for _, s := range flow.Steps {
-		id := stepID(s)
-		stepReports = append(stepReports, stepBuckets[id].toReport(id))
-	}
 
 	report := FlowReport{
 		TotalRequests:      totalRequests,
