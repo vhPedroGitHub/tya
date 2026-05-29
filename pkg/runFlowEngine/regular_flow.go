@@ -14,7 +14,6 @@ import (
 type rumpUpResponse struct {
 	rampDuration        time.Duration
 	stableRPS           float64
-	analysisDuration    time.Duration
 	forcedPlateau       bool
 	forcedPlateauReason string
 	totalNegativeResets int
@@ -52,7 +51,7 @@ func revisionerRampUpandExecuteFlow(
 	var totalLaunches, totalRequests, totalErrors, totalIterations int64
 	var allLatsMu sync.Mutex
 	var allLats []time.Duration
-	var isRampUp bool = true
+	var isRampUp = true
 	var mapForSetpsMu sync.RWMutex
 
 	// errorsByStatus and errorsByStep for the report.

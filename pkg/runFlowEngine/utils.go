@@ -8,13 +8,6 @@ import (
 	"github.com/vhPedroGitHub/tya/pkg/configyml"
 )
 
-func boolToInt64(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
 func mapGet(v any, key string) any {
 	if m, ok := v.(map[string]any); ok {
 		return m[key]
