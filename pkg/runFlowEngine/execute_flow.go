@@ -143,6 +143,13 @@ func ExecuteFlowv2(
 	ebStep := copyInt64Map(errByStep)
 	errMu.Unlock()
 
+	// Build per-step reports.
+	stepReports := make([]StepReport, 0, len(flow.Steps))
+	for _, s := range flow.Steps {
+		id := stepID(s)
+		stepReports = append(stepReports, stepBuckets[id].toReport(id))
+	}
+
 	report := FlowReport{
 		TotalRequests:      totalRequests,
 		SuccessfulRequests: successful,
@@ -151,6 +158,7 @@ func ExecuteFlowv2(
 		LatencyMS:          computeLatencyStats(lats),
 		ErrorsByStatus:     ebs,
 		ErrorsByStep:       ebStep,
+		Steps:              stepReports,
 	}
 	extraReportFields(&report)
 

@@ -48,6 +48,8 @@ type FlowReport struct {
 	LatencyMS           LatencyStats     `json:"latency_ms"`
 	ErrorsByStatus      map[string]int64 `json:"errors_by_status,omitempty"`
 	ErrorsByStep        map[string]int64 `json:"errors_by_step,omitempty"`
+	// Steps is a per-step breakdown included in the flow report.
+	Steps []StepReport `json:"steps,omitempty"`
 
 	// Ramp-up and adaptive engine fields.
 

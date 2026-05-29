@@ -291,6 +291,7 @@ func ExecuteIterateFlow(
 		LatencyMS:          computeLatencyStats(lats),
 		ErrorsByStatus:     ebs,
 		ErrorsByStep:       ebStep,
+		Steps:              stepReports,
 	}
 }
 
