@@ -11,12 +11,11 @@ import (
 // depends_on fields. It checks:
 //
 //  1. Every name listed in depends_on refers to an existing flow.
-//  2. Wire-flow names are not used in depends_on (they are internal).
-//  3. The graph is acyclic — no circular dependencies exist.
+//  2. The graph is acyclic — no circular dependencies exist.
 //
 // Returns a descriptive error on the first violation found.
 func ValidateDependencyGraph(flows []configyml.Flow) error {
-	// Build a set of top-level flow names (wire-flows are not top-level).
+	// Build a set of top-level flow names.
 	names := make(map[string]struct{}, len(flows))
 	for _, f := range flows {
 		names[f.Name] = struct{}{}

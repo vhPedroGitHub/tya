@@ -20,18 +20,12 @@ import (
 type IterateFlowExecutorFunc func(flow configyml.Flow) FlowReport
 
 // FlowExecutorFunc is the signature of the function that actually runs a
-// single flow and returns its report. The scheduler calls this function once
-// per flow. The lastCtx parameter receives the final execution context of the
-// parent flow (non-nil only when the flow is a dependency of a wire-flow
-// invocation; for top-level flows it will be nil on entry).
+// single flow and returns its report along with the final execution context.
+// The scheduler calls this function once per flow.
 type FlowExecutorFunc func(flow configyml.Flow) (FlowReport, FlowContext)
 
-// WireFlowExecutorFunc runs a wire-flow given an inherited parent context
-// and returns step-level metrics.
-type WireFlowExecutorFunc func(wf configyml.WireFlow, parentCtx FlowContext) []StepReport
-
 // FlowContext is a per-goroutine key-value map used to pass extracted values
-// between steps and to wire-flows.
+// between steps.
 type FlowContext map[string]any
 
 // FlowReport carries the metrics produced by a single flow execution.
