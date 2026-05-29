@@ -235,7 +235,7 @@ After 10s at 20 RPS with 1 step, you'll have ~200 person IDs in the list.
 
 A lightweight verification that runs after all iterate processing is complete. Low RPS (5) and short duration (5s) — just enough to confirm the API is still responsive after the heavy load.
 
-### Phase 5: Cleanup (`iterate` + wire-flow pattern)
+### Phase 5: Cleanup (`iterate` pattern)
 
 ```yaml
 - name: iterate-cleanup

@@ -213,14 +213,8 @@ type Flow struct {
 	ItemVariable string `yaml:"item_variable,omitempty"`
 }
 
-// WireFlow is a one-shot flow that runs after its parent flow completes.
-// It inherits the parent's final execution context and cannot be referenced
-type WireFlow struct {
-	Name  string `yaml:"name"`
-	Type  string `yaml:"type"` // must be "wire-flow"
-	Auth  string `yaml:"auth,omitempty"`
-	Steps []Step `yaml:"steps"`
-}
+// (Deprecated) Previously TYA supported a one-shot child flow type.
+// That concept has been removed; all flows are represented by `Flow`.
 
 // Step is one HTTP request inside a flow.
 type Step struct {

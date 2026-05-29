@@ -44,7 +44,7 @@ cmd/app/main.go              # Demo REST API (SQLite, JWT, bcrypt) — canonical
 pkg/commands/                # One file per CLI command (init.go, create.go, run.go, genk6.go, runk6s.go)
 pkg/cli_functions/           # Shared business logic:
   dependency_graph.go        #   ValidateDependencyGraph, TopologicalOrder
-  run_scheduler.go           #   GlobalBucket, IterateFlowExecutorFunc, WireFlowExecutorFunc, RunScheduler
+  run_scheduler.go           #   GlobalBucket, IterateFlowExecutorFunc, RunScheduler
 pkg/models/                  # Data structs; files named <command>_options.go
 pkg/configyml/configyml.go   # YAML config structs + validation + load/write helpers
 pkg/k6gen/                   # k6 script generator:
