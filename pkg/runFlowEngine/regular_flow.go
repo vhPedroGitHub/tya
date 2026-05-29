@@ -39,7 +39,7 @@ func revisionerRampUpandExecuteFlow(
 	baseURL string,
 	lastCtx FlowContext,
 	duration time.Duration,
-) {
+) (int64, int64, int64, []time.Duration, float64, rumpUpResponse) {
 	// Per-step metric accumulators.
 	stepBuckets := make(map[string]*stepMetricsBucket, len(flow.Steps))
 	for _, s := range flow.Steps {
@@ -103,6 +103,13 @@ func revisionerRampUpandExecuteFlow(
 	mapNum := 0
 	tryIncrement := 0
 
+	// Semaphore: cap concurrent goroutines to avoid unbounded accumulation.
+	semCap := int(targetRPS/nSteps*10) + 1
+	if semCap < 8 {
+		semCap = 8
+	}
+	sem := make(chan struct{}, semCap)
+
 	rampTimeout := time.NewTimer(maxRampDur)
 	defer rampTimeout.Stop()
 
@@ -115,7 +122,20 @@ func revisionerRampUpandExecuteFlow(
 	}
 
 	spawnIteration := func(ctx context.Context) time.Duration {
-		return SpawnIterationSimple(ctx, log, &totalLaunches, baseURL, bucket, flow, authMap, &lastCtx, &lastCtxMu, &totalIterations, func(id string, res stepResult) { recordResult(id, res) })
+		// Acquire semaphore slot
+		select {
+		case sem <- struct{}{}:
+		default:
+			// Semaphore full — drop this iteration to avoid runaway goroutines
+			return 0
+		}
+		
+		// Run iteration synchronously
+		dur := SpawnIterationSimple(ctx, log, &totalLaunches, baseURL, bucket, flow, authMap, &lastCtx, &lastCtxMu, &totalIterations, func(id string, res stepResult) { recordResult(id, res) })
+		
+		// Release semaphore slot
+		<-sem
+		return dur
 	}
 
 	rampStart := time.Now()
@@ -316,7 +336,7 @@ func revisionerRampUpandExecuteFlow(
 
 		case <-timerGen.C:
 			windowsIterations := atomic.LoadInt64(&totalIterations) - windowsBeforeSecondIterations
-			windowRPS := float64(windowsIterations) * nSteps / stepWin.Seconds()
+			windowRPS := float64(windowsIterations) * nSteps / 1.0 // timerGen fires every 1 second
 			windowsBeforeSecondIterations += windowsIterations
 
 			if isRampUp {
@@ -472,7 +492,24 @@ func revisionerRampUpandExecuteFlow(
 			log.Info("run context cancelled — stopping ramp/monitor loop")
 			// Wait for regulators to finish their current iteration.
 			regulatorsWg.Wait()
-			return
+			
+			// Collect final metrics
+			allLatsMu.Lock()
+			finalLats := make([]time.Duration, len(allLats))
+			copy(finalLats, allLats)
+			allLatsMu.Unlock()
+			
+			// Build response
+			finalResp := rumpUpResponse{
+				rampDuration:        time.Since(rampStart),
+				stableRPS:           currentRPS,
+				forcedPlateau:       forcedPlateau,
+				forcedPlateauReason: forcedPlateauReason,
+				totalNegativeResets: negativeResets,
+				maxReached:          maxReached,
+			}
+			
+			return atomic.LoadInt64(&totalRequests), atomic.LoadInt64(&totalErrors), atomic.LoadInt64(&totalIterations), finalLats, currentRPS, finalResp
 		}
 
 	}

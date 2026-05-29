@@ -168,12 +168,18 @@ func RunScheduler(
 			)
 
 			var report FlowReport
+			var ctx FlowContext
 
 			if f.Type == "iterate" {
 				report = iterateExec(f)
 				report.Name = f.Name
 				report.Type = f.Type
+			} else {
+				report, ctx = flowExec(f)
+				report.Name = f.Name
+				report.Type = f.Type
 			}
+			_ = ctx
 
 			mu.Lock()
 			results[f.Name] = report

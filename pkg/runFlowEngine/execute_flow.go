@@ -119,7 +119,34 @@ func ExecuteFlowv2(
 		}
 
 		initRPS := rampCfg.InitialRPS
-		revisionerRampUpandExecuteFlow(log, flow, rampCfg, initRPS, flow.RequestsPerSecond, stepWin, nSteps, bucket, authMap, baseURL, lastCtx, duration)
+		totalReqs, totalErrs, totalIters, lats, stableRPS, rampResp := revisionerRampUpandExecuteFlow(log, flow, rampCfg, initRPS, flow.RequestsPerSecond, stepWin, nSteps, bucket, authMap, baseURL, lastCtx, duration)
+		
+		// Update counters from the adaptive engine
+		atomic.AddInt64(&totalRequests, totalReqs)
+		atomic.AddInt64(&totalErrors, totalErrs)
+		atomic.AddInt64(&totalIterations, totalIters)
+		allLatsMu.Lock()
+		allLats = append(allLats, lats...)
+		allLatsMu.Unlock()
+		
+		// Compute RPS achieved
+		if rampResp.rampDuration.Seconds() > 0 {
+			rpsAchieved = stableRPS
+		}
+		
+		// Populate extra report fields
+		extraReportFields = func(r *FlowReport) {
+			r.RampUpDurationS = rampResp.rampDuration.Seconds()
+			r.AnalysisDurationS = duration.Seconds()
+			r.StableRPSTarget = flow.RequestsPerSecond
+			r.StableRPSAchieved = stableRPS
+			r.IterationsPerSecond = float64(totalIters) / duration.Seconds()
+			r.StableRPSMaxReached = rampResp.maxReached
+			r.ForcedPlateau = rampResp.forcedPlateau
+			r.ForcedPlateauReason = rampResp.forcedPlateauReason
+			r.ForcedPlateauRPS = stableRPS
+			r.NegativeResets = rampResp.totalNegativeResets
+		}
 	}
 
 	// Compute overall latency stats.
