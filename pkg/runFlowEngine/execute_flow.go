@@ -63,6 +63,78 @@ func ExecuteFlowv2(
 	var lastCtxMu sync.Mutex
 	var lastCtx FlowContext
 
+	// If a live-update callback is registered, start a goroutine that sends
+	// periodic FlowReport snapshots every second. The goroutine captures the
+	// local counters and step buckets to provide a useful live view.
+	updateMu.RLock()
+	hasUpdate := updateFn != nil
+	updateMu.RUnlock()
+	if hasUpdate {
+		stopUpdates := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			prev := int64(0)
+			for {
+				select {
+				case <-ticker.C:
+					cur := atomic.LoadInt64(&totalRequests)
+					curErr := atomic.LoadInt64(&totalErrors)
+					rps := float64(cur - prev)
+					prev = cur
+
+					allLatsMu.Lock()
+					latsCopy := make([]time.Duration, len(allLats))
+					copy(latsCopy, allLats)
+					allLatsMu.Unlock()
+
+					stepReps := make([]StepReport, 0, len(flow.Steps))
+					for _, s := range flow.Steps {
+						id := stepID(s)
+						if sb, ok := stepBuckets[id]; ok {
+							stepReps = append(stepReps, sb.toReport(id))
+						}
+					}
+
+					// global bucket usage snapshot
+					usage := make(map[string]BucketUsage)
+					scalars := bucket.Snapshot()
+					lists := bucket.SnapshotLists()
+					for f, ns := range scalars {
+						u := usage[f]
+						u.Scalars = len(ns)
+						usage[f] = u
+					}
+					for f, ns := range lists {
+						u := usage[f]
+						cnt := 0
+						for _, arr := range ns {
+							cnt += len(arr)
+						}
+						u.ListItems = cnt
+						usage[f] = u
+					}
+
+					rep := FlowReport{
+						Name:               flow.Name,
+						Type:               flow.Type,
+						TotalRequests:      cur,
+						SuccessfulRequests: cur - curErr,
+						FailedRequests:     curErr,
+						RPSAchieved:        rps,
+						LatencyMS:          computeLatencyStats(latsCopy),
+						Steps:              stepReps,
+						GlobalBucketUsage:  usage,
+					}
+					sendUpdate(flow.Name, rep)
+				case <-stopUpdates:
+					return
+				}
+			}
+		}()
+		defer close(stopUpdates)
+	}
+
 	// stepReports will be populated by either test mode or adaptive engine
 	var stepReports []StepReport
 
@@ -81,9 +153,14 @@ func ExecuteFlowv2(
 			}
 		}
 		iterOK := true
+		// Collect detailed per-step results so we can optionally step through
+		// them interactively when running in test+step mode.
+		detailed := make([]stepResult, 0, len(flow.Steps))
 		for _, step := range flow.Steps {
 			id := stepID(step)
 			res := executeStep(log, step, fCtx, authMap[flow.Auth])
+			// keep a copy for interactive inspection
+			detailed = append(detailed, res)
 			recordResult(id, res)
 			if res.Err != nil || res.StatusCode >= 400 {
 				iterOK = false
@@ -103,7 +180,13 @@ func ExecuteFlowv2(
 			lastCtxMu.Unlock()
 		}
 		atomic.AddInt64(&totalIterations, 1)
-		
+
+		// If the user requested interactive stepping, present the detailed
+		// trace and allow forward/back navigation.
+		if opts.StepMode {
+			StepThroughSteps(flow, detailed)
+		}
+
 		// Build per-step reports for test mode
 		stepReports = make([]StepReport, 0, len(flow.Steps))
 		for _, s := range flow.Steps {
@@ -130,7 +213,7 @@ func ExecuteFlowv2(
 
 		initRPS := rampCfg.InitialRPS
 		totalReqs, totalErrs, totalIters, lats, stableRPS, rampResp, stepReps := revisionerRampUpandExecuteFlow(log, flow, rampCfg, initRPS, flow.RequestsPerSecond, stepWin, nSteps, bucket, authMap, baseURL, lastCtx, duration)
-		
+
 		// Update counters from the adaptive engine
 		atomic.AddInt64(&totalRequests, totalReqs)
 		atomic.AddInt64(&totalErrors, totalErrs)
@@ -138,15 +221,15 @@ func ExecuteFlowv2(
 		allLatsMu.Lock()
 		allLats = append(allLats, lats...)
 		allLatsMu.Unlock()
-		
+
 		// Use step reports from adaptive engine
 		stepReports = stepReps
-		
+
 		// Compute RPS achieved
 		if rampResp.rampDuration.Seconds() > 0 {
 			rpsAchieved = stableRPS
 		}
-		
+
 		// Populate extra report fields
 		extraReportFields = func(r *FlowReport) {
 			r.RampUpDurationS = rampResp.rampDuration.Seconds()

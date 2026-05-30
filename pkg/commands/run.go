@@ -31,6 +31,8 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.ConfigFile, "config", "config-run.yml", "path to config-run.yml")
 	cmd.Flags().BoolVarP(&opts.TestMode, "test", "t", false, "test mode: single pass, ignores RPS")
+	cmd.Flags().BoolVar(&opts.StepMode, "step", false, "interactive step-through when in test mode (-t)")
+	cmd.Flags().BoolVar(&opts.LiveUI, "live", false, "enable live dashboard UI output (updates in-place)")
 	cmd.Flags().StringVar(&opts.Flow, "flow", "", "run only this named flow")
 
 	return cmd

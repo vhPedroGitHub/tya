@@ -86,6 +86,24 @@ type FlowReport struct {
 	// ThinkTimeAppliedMs is the mean think-time sleep (ms) applied at the
 	// end of each goroutine iteration to regulate the flow rhythm.
 	ThinkTimeAppliedMs float64 `json:"think_time_applied_ms,omitempty"`
+
+	// CurrentConcurrency is the instantaneous number of goroutines currently
+	// executing iterations for this flow (live metric reported to the UI).
+	CurrentConcurrency int64 `json:"current_concurrency,omitempty"`
+	// SemaphoreCapacity is the capacity of the internal concurrency semaphore.
+	SemaphoreCapacity int `json:"semaphore_capacity,omitempty"`
+	// SemaphoreInUse is the current number of occupied semaphore slots.
+	SemaphoreInUse int `json:"semaphore_in_use,omitempty"`
+	// GlobalBucketUsage summarises how many scalar keys and list items are
+	// currently stored in the GlobalBucket per flow namespace.
+	GlobalBucketUsage map[string]BucketUsage `json:"global_bucket_usage,omitempty"`
+}
+
+// BucketUsage summarises scalar and list item counts stored per flow in the
+// GlobalBucket.
+type BucketUsage struct {
+	Scalars   int `json:"scalars"`
+	ListItems int `json:"list_items"`
 }
 
 // LatencyStats holds the full suite of latency percentiles (in milliseconds).

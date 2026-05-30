@@ -9,6 +9,7 @@ import (
 	"github.com/vhPedroGitHub/tya/pkg/configyml"
 	"github.com/vhPedroGitHub/tya/pkg/models"
 	runflowengine "github.com/vhPedroGitHub/tya/pkg/runFlowEngine"
+	"github.com/vhPedroGitHub/tya/pkg/ui"
 	"go.uber.org/zap"
 )
 
@@ -76,6 +77,16 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 
 	// Create the global bucket shared across all flows.
 	bucket := runflowengine.NewGlobalBucket()
+
+	// Start live dashboard UI if requested. The dashboard registers an update
+	// callback inside the runflowengine package and will render live metrics.
+	if opts.LiveUI {
+		if err := ui.StartDashboard(log); err != nil {
+			log.Warn("could not start live dashboard", zap.Error(err))
+		} else {
+			defer ui.StopDashboard()
+		}
+	}
 
 	// Build the executor functions that close over logger, authMap, opts, baseURL, bucket.
 	flowExec := func(flow configyml.Flow) (runflowengine.FlowReport, runflowengine.FlowContext) {
