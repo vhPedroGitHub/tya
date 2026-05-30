@@ -37,6 +37,13 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// If the user enabled interactive step mode, make sure test mode is also
+	// enabled so we run a single sequential pass suitable for stepping.
+	if opts.StepMode && !opts.TestMode {
+		log.Info("step mode implies test mode; enabling test mode")
+		opts.TestMode = true
+	}
+
 	// Build auth profile map.
 	authMap := map[string]configyml.AuthProfile{}
 	for _, a := range cfg.AuthProfiles {
@@ -102,14 +109,24 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 					// replace fd 2 with our file
 					if dup2Err := syscall.Dup2(int(f.Fd()), int(os.Stderr.Fd())); dup2Err == nil {
 						// ensure restoration at the end
+						// copy oldFD into local to capture by value
+						old := oldFD
 						defer func() {
-							syscall.Dup2(oldFD, int(os.Stderr.Fd()))
-							syscall.Close(oldFD)
-							f.Close()
+							if err := syscall.Dup2(old, int(os.Stderr.Fd())); err != nil {
+								log.Warn("failed to restore stderr", zap.Error(err))
+							}
+							if err := syscall.Close(old); err != nil {
+								log.Warn("failed to close duplicated fd", zap.Error(err))
+							}
+							if err := f.Close(); err != nil {
+								log.Warn("failed to close live log file", zap.Error(err))
+							}
 						}()
 					} else {
 						// cleanup oldFD if dup2 failed
-						syscall.Close(oldFD)
+						if err := syscall.Close(oldFD); err != nil {
+							log.Warn("failed to close duplicated fd", zap.Error(err))
+						}
 					}
 				}
 			}
@@ -123,7 +140,7 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 			prevGlobal = zap.L()
 			zap.ReplaceGlobals(fileLogger)
 			// ensure we restore the previous global logger
-			defer func() { zap.ReplaceGlobals(prevGlobal); fileLogger.Sync() }()
+			defer func() { zap.ReplaceGlobals(prevGlobal); _ = fileLogger.Sync() }()
 
 			// use file logger for local flows as well
 			log = fileLogger

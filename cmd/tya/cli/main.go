@@ -38,6 +38,7 @@ Commands:
 	root.AddCommand(commands.NewRunCmd(log))
 	root.AddCommand(commands.NewGenK6Cmd(log))
 	root.AddCommand(commands.NewRunK6SCmd(log))
+	root.AddCommand(commands.NewVersionCmd(log))
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

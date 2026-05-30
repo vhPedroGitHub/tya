@@ -22,6 +22,8 @@ func StepThroughSteps(flow configyml.Flow, detailed []stepResult) {
 
 	reader := bufio.NewReader(os.Stdin)
 	idx := 0
+	showFullReq := false
+	showFullResp := false
 
 	clear := func() {
 		fmt.Print("\033[H\033[2J")
@@ -41,15 +43,37 @@ func StepThroughSteps(flow configyml.Flow, detailed []stepResult) {
 		return s
 	}
 
+	truncate := func(s string, maxLines int) string {
+		if s == "(empty)" {
+			return s
+		}
+		lines := strings.Split(s, "\n")
+		if len(lines) <= maxLines {
+			return s
+		}
+		out := strings.Join(lines[:maxLines], "\n")
+		out += fmt.Sprintf("\n... (truncated %d lines — press 'r' or 'b' to expand)", len(lines)-maxLines)
+		return out
+	}
+
 	for {
 		clear()
 		cur := detailed[idx]
 		step := flow.Steps[idx]
 		fmt.Printf("Flow: %s — Step %d/%d — %s %s\n", flow.Name, idx+1, len(detailed), step.Method, step.Endpoint)
 		fmt.Println("-------------------------------------------------------------------")
-		fmt.Printf("Request:\n%s\n\n", pretty(cur.RequestBody))
-		fmt.Printf("Response: status=%d\n%s\n\n", cur.StatusCode, pretty(cur.Body))
-		fmt.Println("Commands: n=next, p=prev, f=first, l=last, j <num>=jump, q=quit")
+		reqStr := pretty(cur.RequestBody)
+		respStr := pretty(cur.Body)
+		if !showFullReq {
+			reqStr = truncate(reqStr, 20)
+		}
+		if !showFullResp {
+			respStr = truncate(respStr, 20)
+		}
+
+		fmt.Printf("Request:\n%s\n\n", reqStr)
+		fmt.Printf("Response: status=%d\n%s\n\n", cur.StatusCode, respStr)
+		fmt.Println("Commands: n=next, p=prev, f=first, l=last, j <num>=jump, r=toggle request, b=toggle response, q=quit")
 		fmt.Print("> ")
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
@@ -71,6 +95,10 @@ func StepThroughSteps(flow configyml.Flow, detailed []stepResult) {
 		case line == "q":
 			clear()
 			return
+		case line == "r":
+			showFullReq = !showFullReq
+		case line == "b":
+			showFullResp = !showFullResp
 		case strings.HasPrefix(line, "j "):
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {

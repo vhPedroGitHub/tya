@@ -25,7 +25,6 @@ var (
 	updatesCh chan dashboardUpdate
 	stopCh    chan struct{}
 	started   bool
-	logger    *zap.Logger
 )
 
 // StartDashboard initialises the live dashboard and registers an update
@@ -37,7 +36,6 @@ func StartDashboard(log *zap.Logger) error {
 	if started {
 		return nil
 	}
-	logger = log
 	updatesCh = make(chan dashboardUpdate, 256)
 	stopCh = make(chan struct{})
 	// hide cursor to avoid flicker
@@ -161,7 +159,7 @@ func readProcTimes() (uint64, uint64, error) {
 	if err != nil {
 		return procTicks, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	r := bufio.NewReader(f)
 	line, err := r.ReadString('\n')
 	if err != nil {
