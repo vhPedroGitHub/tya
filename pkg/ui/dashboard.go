@@ -40,6 +40,8 @@ func StartDashboard(log *zap.Logger) error {
 	logger = log
 	updatesCh = make(chan dashboardUpdate, 256)
 	stopCh = make(chan struct{})
+	// hide cursor to avoid flicker
+	fmt.Print("\033[?25l")
 
 	// Register update callback
 	runflowengine.RegisterUpdateFunc(func(flowName string, r runflowengine.FlowReport) {
@@ -62,6 +64,8 @@ func StopDashboard() {
 		mu.Unlock()
 		return
 	}
+	// restore cursor
+	fmt.Print("\033[?25h")
 	close(stopCh)
 	started = false
 	runflowengine.ClearUpdateFunc()
@@ -181,15 +185,15 @@ func draw(reports map[string]runflowengine.FlowReport, res struct {
 	SysBytes   uint64
 	Goroutines int
 }) {
-	// clear screen
+	// move cursor home and clear screen
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("TYA Live Dashboard — flows (updates every second)")
-	fmt.Println("-----------------------------------------------------------------")
+	fmt.Printf("TYA Live Dashboard — flows (updates every second)\033[K\n")
+	fmt.Printf("-----------------------------------------------------------------\033[K\n")
 
 	// show resource usage
-	fmt.Printf("CPU: %5.1f%%  Goroutines: %d  Mem(alloc): %.2fMB  Mem(sys): %.2fMB\n",
+	fmt.Printf("CPU: %5.1f%%  Goroutines: %d  Mem(alloc): %.2fMB  Mem(sys): %.2fMB\033[K\n",
 		res.CPUPercent, res.Goroutines, float64(res.AllocBytes)/1024.0/1024.0, float64(res.SysBytes)/1024.0/1024.0)
-	fmt.Println("-----------------------------------------------------------------")
+	fmt.Printf("-----------------------------------------------------------------\033[K\n")
 
 	// sort names for stable display
 	names := make([]string, 0, len(reports))
@@ -200,15 +204,15 @@ func draw(reports map[string]runflowengine.FlowReport, res struct {
 
 	for _, n := range names {
 		r := reports[n]
-		fmt.Printf("%-24s  RPS: %6.2f  Req: %6d  Fail: %6d  Concurrency: %3d  Sem: %2d/%2d  p50: %6.2fms  p95: %6.2fms\n",
+		fmt.Printf("%-24s  RPS: %6.2f  Req: %6d  Fail: %6d  Concurrency: %3d  Sem: %2d/%2d  p50: %6.2fms  p95: %6.2fms\033[K\n",
 			n, r.RPSAchieved, r.TotalRequests, r.FailedRequests, r.CurrentConcurrency, r.SemaphoreInUse, r.SemaphoreCapacity, r.LatencyMS.P50, r.LatencyMS.P95)
 		// show global bucket usage for this flow if present
 		if u, ok := r.GlobalBucketUsage[n]; ok {
-			fmt.Printf("   GlobalBucket: scalars=%d  list_items=%d\n", u.Scalars, u.ListItems)
+			fmt.Printf("   GlobalBucket: scalars=%d  list_items=%d\033[K\n", u.Scalars, u.ListItems)
 		}
 		// show per-step brief metrics
 		for _, s := range r.Steps {
-			fmt.Printf("   - %-20s req:%6d  err:%4d  p95:%6.2fms\n",
+			fmt.Printf("   - %-20s req:%6d  err:%4d  p95:%6.2fms\033[K\n",
 				s.StepID, s.Requests, s.Errors, s.LatencyMS.P95)
 		}
 		fmt.Println()

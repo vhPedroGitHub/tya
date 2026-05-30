@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/vhPedroGitHub/tya/pkg/configyml"
@@ -11,6 +13,7 @@ import (
 	runflowengine "github.com/vhPedroGitHub/tya/pkg/runFlowEngine"
 	"github.com/vhPedroGitHub/tya/pkg/ui"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // runReport is the top-level JSON report structure written at the end of a run.
@@ -78,9 +81,54 @@ func RunFlows(log *zap.Logger, opts *models.RunOptions) error {
 	// Create the global bucket shared across all flows.
 	bucket := runflowengine.NewGlobalBucket()
 
-	// Start live dashboard UI if requested. The dashboard registers an update
-	// callback inside the runflowengine package and will render live metrics.
+	// Start live dashboard UI if requested. When the live UI is enabled we
+	// redirect engine logging into a separate file so JSON logs don't spam the
+	// terminal and interfere with the in-place dashboard rendering.
 	if opts.LiveUI {
+		// open log file for engine logs
+		f, err := os.OpenFile("tya-live.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			log.Warn("could not open live log file, continuing with terminal logging", zap.Error(err))
+		} else {
+			// Forcibly redirect process stderr to the file so any library
+			// writing to fd 2 does not pollute the live dashboard. This uses
+			// a syscall and is Unix-specific. On non-Unix platforms we still
+			// replace the global zap logger.
+			var prevGlobal *zap.Logger
+			if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+				// duplicate current stderr so we can restore it later
+				oldFD, dupErr := syscall.Dup(int(os.Stderr.Fd()))
+				if dupErr == nil {
+					// replace fd 2 with our file
+					if dup2Err := syscall.Dup2(int(f.Fd()), int(os.Stderr.Fd())); dup2Err == nil {
+						// ensure restoration at the end
+						defer func() {
+							syscall.Dup2(oldFD, int(os.Stderr.Fd()))
+							syscall.Close(oldFD)
+							f.Close()
+						}()
+					} else {
+						// cleanup oldFD if dup2 failed
+						syscall.Close(oldFD)
+					}
+				}
+			}
+
+			// create a file-backed zap logger and replace globals so any
+			// package using zap.L() also routes to the file.
+			encCfg := zap.NewProductionEncoderConfig()
+			enc := zapcore.NewJSONEncoder(encCfg)
+			core := zapcore.NewCore(enc, zapcore.AddSync(f), zap.InfoLevel)
+			fileLogger := zap.New(core)
+			prevGlobal = zap.L()
+			zap.ReplaceGlobals(fileLogger)
+			// ensure we restore the previous global logger
+			defer func() { zap.ReplaceGlobals(prevGlobal); fileLogger.Sync() }()
+
+			// use file logger for local flows as well
+			log = fileLogger
+		}
+
 		if err := ui.StartDashboard(log); err != nil {
 			log.Warn("could not start live dashboard", zap.Error(err))
 		} else {
