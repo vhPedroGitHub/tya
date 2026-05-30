@@ -79,6 +79,77 @@ func revisionerRampUpandExecuteFlow(
 
 	var rampWg sync.WaitGroup
 
+	// Live update ticker: send periodic snapshots (1s) including current
+	// concurrency, semaphore occupancy and GlobalBucket usage to the UI if
+	// a callback is registered.
+	updateTicker := time.NewTicker(1 * time.Second)
+	defer updateTicker.Stop()
+	stopUpdates := make(chan struct{})
+	defer close(stopUpdates)
+	go func() {
+		prevTotal := atomic.LoadInt64(&totalRequests)
+		for {
+			select {
+			case <-updateTicker.C:
+				curTotal := atomic.LoadInt64(&totalRequests)
+				delta := curTotal - prevTotal
+				prevTotal = curTotal
+
+				// copy latencies
+				allLatsMu.Lock()
+				latsCopy := make([]time.Duration, len(allLats))
+				copy(latsCopy, allLats)
+				allLatsMu.Unlock()
+
+				// per-step reports
+				stepReps := make([]StepReport, 0, len(flow.Steps))
+				for _, s := range flow.Steps {
+					id := stepID(s)
+					if sb, ok := stepBuckets[id]; ok {
+						stepReps = append(stepReps, sb.toReport(id))
+					}
+				}
+
+				// global bucket usage
+				usage := make(map[string]BucketUsage)
+				scalars := bucket.Snapshot()
+				lists := bucket.SnapshotLists()
+				for f, ns := range scalars {
+					u := usage[f]
+					u.Scalars = len(ns)
+					usage[f] = u
+				}
+				for f, ns := range lists {
+					u := usage[f]
+					cnt := 0
+					for _, arr := range ns {
+						cnt += len(arr)
+					}
+					u.ListItems = cnt
+					usage[f] = u
+				}
+
+				rep := FlowReport{
+					Name:               flow.Name,
+					Type:               flow.Type,
+					TotalRequests:      curTotal,
+					SuccessfulRequests: curTotal - atomic.LoadInt64(&totalErrors),
+					FailedRequests:     atomic.LoadInt64(&totalErrors),
+					RPSAchieved:        float64(delta),
+					LatencyMS:          computeLatencyStats(latsCopy),
+					Steps:              stepReps,
+					CurrentConcurrency: atomic.LoadInt64(&activeConcurrency),
+					SemaphoreCapacity:  cap(sem),
+					SemaphoreInUse:     len(sem),
+					GlobalBucketUsage:  usage,
+				}
+				sendUpdate(flow.Name, rep)
+			case <-stopUpdates:
+				return
+			}
+		}
+	}()
+
 	tickInterval := func(httpRPS float64) time.Duration {
 		return time.Duration(float64(time.Second) * nSteps / httpRPS)
 	}

@@ -8,4 +8,11 @@ type RunOptions struct {
 	TestMode bool
 	// Flow filters execution to a specific named flow.
 	Flow string
+	// StepMode enables interactive step-through of executed steps when
+	// running in test mode (-t). It lets the user inspect request/response
+	// per step and navigate forward/backward.
+	StepMode bool
+	// LiveUI enables the in-place live dashboard that updates flow metrics
+	// every second instead of streaming log lines.
+	LiveUI bool
 }
